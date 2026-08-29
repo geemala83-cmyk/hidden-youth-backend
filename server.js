@@ -1,25 +1,25 @@
 const express = require("express");
 const cors = require("cors");
-const { Pool } = require("pg");
 const crypto = require("crypto");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-/* ==============================
-   MIDDLEWARE
-============================== */
-
 app.use(cors());
 app.use(express.json());
 
-
 /* ==============================
-   POSTGRESQL
+   DATABASE
 ============================== */
 
 if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL is not configured.");
+    process.exit(1);
+}
+
+if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) {
+    console.error("ADMIN_USERNAME and ADMIN_PASSWORD are required.");
     process.exit(1);
 }
 
@@ -28,104 +28,12 @@ const pool = new Pool({
     connectionTimeoutMillis: 10000
 });
 
-
 /* ==============================
-   ADMIN SECURITY
-============================== */
-
-const ADMIN_USERNAME =
-    process.env.ADMIN_USERNAME;
-
-const ADMIN_PASSWORD =
-    process.env.ADMIN_PASSWORD;
-
-if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
-
-    console.error(
-        "ADMIN_USERNAME or ADMIN_PASSWORD is not configured."
-    );
-
-    process.exit(1);
-}
-
-
-/*
-   Temporary login sessions.
-
-   Token is stored in server memory.
-   When Railway restarts/redeploys,
-   existing admin sessions expire.
-*/
-
-const adminSessions = new Map();
-
-
-/* ==============================
-   CREATE ADMIN TOKEN
-============================== */
-
-function createAdminToken() {
-
-    return crypto.randomBytes(32).toString("hex");
-
-}
-
-
-/* ==============================
-   ADMIN AUTH MIDDLEWARE
-============================== */
-
-function requireAdmin(req, res, next) {
-
-    const authorization =
-        req.headers.authorization || "";
-
-
-    if (!authorization.startsWith("Bearer ")) {
-
-        return res.status(401).json({
-
-            success: false,
-
-            message:
-                "Admin authentication required."
-
-        });
-
-    }
-
-
-    const token =
-        authorization.substring(7).trim();
-
-
-    if (!token || !adminSessions.has(token)) {
-
-        return res.status(401).json({
-
-            success: false,
-
-            message:
-                "Invalid or expired admin session."
-
-        });
-
-    }
-
-
-    next();
-
-}
-
-
-/* ==============================
-   CREATE ORDERS TABLE
+   DATABASE INITIALIZATION
 ============================== */
 
 async function initializeDatabase() {
-
     try {
-
         await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id VARCHAR(100) PRIMARY KEY,
@@ -137,12 +45,8 @@ async function initializeDatabase() {
             );
         `);
 
-        console.log(
-            "POSTGRESQL DATABASE READY"
-        );
-
+        console.log("POSTGRESQL DATABASE READY");
     } catch (error) {
-
         console.error(
             "DATABASE INITIALIZATION ERROR:",
             error.message
@@ -150,16 +54,13 @@ async function initializeDatabase() {
 
         process.exit(1);
     }
-
 }
 
-
 /* ==============================
-   HIDDEN YOUTH PRODUCTS
+   PRODUCTS
 ============================== */
 
 const products = [
-
     {
         id: 1,
         name: "GYM FIT — 01",
@@ -168,7 +69,6 @@ const products = [
         price: 4990,
         image: "gym.fit.jpg"
     },
-
     {
         id: 2,
         name: "GYM FIT — 02",
@@ -177,7 +77,6 @@ const products = [
         price: 4990,
         image: "gym.fit2.jpg"
     },
-
     {
         id: 3,
         name: "GYM FIT — 03",
@@ -186,7 +85,6 @@ const products = [
         price: 4990,
         image: "gym.fit3.jpg"
     },
-
     {
         id: 4,
         name: "GYM FIT — 04",
@@ -195,12 +93,153 @@ const products = [
         price: 4990,
         image: "gym.fit4.jpg"
     }
-
 ];
 
+/* ==============================
+   ADMIN AUTH
+============================== */
+
+const ADMIN_TOKEN_TTL_MS =
+    24 * 60 * 60 * 1000;
+
+function getAdminSecret() {
+    return crypto
+        .createHash("sha256")
+        .update(
+            `${process.env.ADMIN_USERNAME}:${process.env.ADMIN_PASSWORD}`
+        )
+        .digest("hex");
+}
+
+function createAdminToken() {
+    const payload = {
+        sub: "admin",
+        exp: Date.now() + ADMIN_TOKEN_TTL_MS
+    };
+
+    const encoded = Buffer
+        .from(JSON.stringify(payload))
+        .toString("base64url");
+
+    const signature = crypto
+        .createHmac("sha256", getAdminSecret())
+        .update(encoded)
+        .digest("base64url");
+
+    return `${encoded}.${signature}`;
+}
+
+function verifyAdminToken(token) {
+    try {
+        if (!token) return false;
+
+        const parts = token.split(".");
+
+        if (parts.length !== 2) {
+            return false;
+        }
+
+        const encoded = parts[0];
+        const signature = parts[1];
+
+        const expected = crypto
+            .createHmac("sha256", getAdminSecret())
+            .update(encoded)
+            .digest("base64url");
+
+        const a = Buffer.from(signature);
+        const b = Buffer.from(expected);
+
+        if (
+            a.length !== b.length ||
+            !crypto.timingSafeEqual(a, b)
+        ) {
+            return false;
+        }
+
+        const payload = JSON.parse(
+            Buffer
+                .from(encoded, "base64url")
+                .toString("utf8")
+        );
+
+        return (
+            payload.sub === "admin" &&
+            payload.exp > Date.now()
+        );
+
+    } catch {
+        return false;
+    }
+}
+
+function requireAdmin(req, res, next) {
+
+    const header =
+        req.headers.authorization || "";
+
+    const token =
+        header.startsWith("Bearer ")
+            ? header.slice(7)
+            : "";
+
+    if (!verifyAdminToken(token)) {
+
+        return res.status(401).json({
+            success: false,
+            message:
+                "Unauthorized. Admin login required."
+        });
+    }
+
+    next();
+}
 
 /* ==============================
-   HOME / API STATUS
+   ADMIN LOGIN
+============================== */
+
+app.post("/api/admin/login", (req, res) => {
+
+    const username =
+        String(req.body?.username || "");
+
+    const password =
+        String(req.body?.password || "");
+
+    if (
+        username !== process.env.ADMIN_USERNAME ||
+        password !== process.env.ADMIN_PASSWORD
+    ) {
+
+        return res.status(401).json({
+
+            success: false,
+
+            message:
+                "Invalid username or password."
+
+        });
+    }
+
+    res.json({
+
+        success: true,
+
+        message:
+            "Admin login successful.",
+
+        token:
+            createAdminToken(),
+
+        expiresIn:
+            ADMIN_TOKEN_TTL_MS
+
+    });
+});
+
+/* ==============================
+   HOME
 ============================== */
 
 app.get("/", async (req, res) => {
@@ -236,149 +275,11 @@ app.get("/", async (req, res) => {
                 "Backend is running but database is unavailable."
 
         });
-
     }
-
 });
 
-
 /* ==============================
-   ADMIN LOGIN
-============================== */
-
-app.post("/api/admin/login", (req, res) => {
-
-    try {
-
-        const username =
-            String(
-                req.body.username || ""
-            ).trim();
-
-        const password =
-            String(
-                req.body.password || ""
-            );
-
-
-        if (
-            username !== ADMIN_USERNAME ||
-            password !== ADMIN_PASSWORD
-        ) {
-
-            return res.status(401).json({
-
-                success: false,
-
-                message:
-                    "Invalid username or password."
-
-            });
-
-        }
-
-
-        const token =
-            createAdminToken();
-
-
-        adminSessions.set(
-            token,
-            {
-                username: ADMIN_USERNAME,
-                createdAt: Date.now()
-            }
-        );
-
-
-        res.json({
-
-            success: true,
-
-            message:
-                "Admin login successful.",
-
-            token: token
-
-        });
-
-
-    } catch (error) {
-
-        console.error(
-            "ADMIN LOGIN ERROR:",
-            error
-        );
-
-        res.status(500).json({
-
-            success: false,
-
-            message:
-                "Login failed."
-
-        });
-
-    }
-
-});
-
-
-/* ==============================
-   ADMIN LOGOUT
-============================== */
-
-app.post(
-    "/api/admin/logout",
-    requireAdmin,
-    (req, res) => {
-
-        const authorization =
-            req.headers.authorization || "";
-
-        const token =
-            authorization.substring(7).trim();
-
-
-        adminSessions.delete(token);
-
-
-        res.json({
-
-            success: true,
-
-            message:
-                "Admin logged out successfully."
-
-        });
-
-    }
-);
-
-
-/* ==============================
-   CHECK ADMIN SESSION
-============================== */
-
-app.get(
-    "/api/admin/me",
-    requireAdmin,
-    (req, res) => {
-
-        res.json({
-
-            success: true,
-
-            authenticated: true
-
-        });
-
-    }
-);
-
-
-/* ==============================
-   GET ALL PRODUCTS
+   PRODUCTS
 ============================== */
 
 app.get("/api/products", (req, res) => {
@@ -389,28 +290,20 @@ app.get("/api/products", (req, res) => {
 
         count: products.length,
 
-        products: products
+        products
 
     });
-
 });
-
-
-/* ==============================
-   GET SINGLE PRODUCT
-============================== */
 
 app.get("/api/products/:id", (req, res) => {
 
     const id =
         Number(req.params.id);
 
-
     const product =
         products.find(
             item => item.id === id
         );
-
 
     if (!product) {
 
@@ -422,24 +315,16 @@ app.get("/api/products/:id", (req, res) => {
                 "Product not found."
 
         });
-
     }
-
 
     res.json({
 
         success: true,
 
-        product: product
+        product
 
     });
-
 });
-
-
-/* ==============================
-   GET PRODUCTS BY CATEGORY
-============================== */
 
 app.get(
     "/api/category/:category",
@@ -448,14 +333,12 @@ app.get(
         const category =
             req.params.category.toLowerCase();
 
-
         const result =
             products.filter(
                 product =>
                     product.category.toLowerCase() ===
                     category
             );
-
 
         res.json({
 
@@ -466,226 +349,184 @@ app.get(
             products: result
 
         });
-
     }
 );
 
-
 /* ==============================
    CREATE ORDER
-   PUBLIC CUSTOMER API
+   PUBLIC
 ============================== */
 
-app.post(
-    "/api/orders",
-    async (req, res) => {
+app.post("/api/orders", async (req, res) => {
 
-        try {
+    try {
 
-            const {
-                customer,
-                items
-            } = req.body;
+        const {
+            customer,
+            items
+        } = req.body;
 
+        if (
+            !customer ||
+            typeof customer !== "object" ||
+            !Array.isArray(items) ||
+            items.length === 0
+        ) {
 
-            if (
-                !customer ||
-                typeof customer !== "object" ||
-                !Array.isArray(items) ||
-                items.length === 0
-            ) {
+            return res.status(400).json({
 
-                return res.status(400).json({
+                success: false,
 
-                    success: false,
+                message:
+                    "Customer and items are required."
 
-                    message:
-                        "Customer and items are required."
+            });
+        }
 
-                });
+        const name =
+            String(customer.name || "").trim();
 
-            }
+        const phone =
+            String(customer.phone || "").trim();
 
+        const address =
+            String(customer.address || "").trim();
 
-            /* CUSTOMER */
+        const city =
+            String(customer.city || "").trim();
 
-            const name =
-                String(
-                    customer.name || ""
-                ).trim();
+        if (
+            !name ||
+            !phone ||
+            !address ||
+            !city
+        ) {
 
-            const phone =
-                String(
-                    customer.phone || ""
-                ).trim();
+            return res.status(400).json({
 
-            const address =
-                String(
-                    customer.address || ""
-                ).trim();
+                success: false,
 
-            const city =
-                String(
-                    customer.city || ""
-                ).trim();
+                message:
+                    "Name, phone, address and city are required."
 
+            });
+        }
 
-            if (
-                !name ||
-                !phone ||
-                !address ||
-                !city
-            ) {
+        const cleanItems =
+            items.map(item => {
 
-                return res.status(400).json({
+                const price =
+                    Number(item.price) || 0;
 
-                    success: false,
+                const quantity =
+                    Math.max(
+                        1,
+                        Number(item.quantity) || 1
+                    );
 
-                    message:
-                        "Name, phone, address and city are required."
+                return {
 
-                });
+                    id: item.id,
 
-            }
+                    name:
+                        String(item.name || ""),
 
+                    price,
 
-            /* ORDER ITEMS */
+                    quantity,
 
-            const cleanItems =
-                items.map(item => {
+                    image:
+                        String(item.image || "")
 
-                    const price =
-                        Number(item.price) || 0;
+                };
+            });
 
+        const total =
+            cleanItems.reduce(
+                (sum, item) =>
+                    sum +
+                    item.price *
+                    item.quantity,
+                0
+            );
 
-                    const quantity =
-                        Math.max(
-                            1,
-                            Number(item.quantity) || 1
-                        );
+        const orderId =
+            "HY-" +
+            Date.now() +
+            "-" +
+            Math.floor(
+                Math.random() * 1000
+            );
 
+        const cleanCustomer = {
 
-                    return {
+            name,
 
-                        id: item.id,
+            phone,
 
-                        name:
-                            String(
-                                item.name || ""
-                            ),
+            address,
 
-                        price: price,
+            city
 
-                        quantity: quantity,
+        };
 
-                        image:
-                            String(
-                                item.image || ""
-                            )
+        const result =
+            await pool.query(
 
-                    };
+                `
+                INSERT INTO orders
+                (
+                    id,
+                    customer,
+                    items,
+                    total,
+                    status
+                )
+                VALUES
+                (
+                    $1,
+                    $2::jsonb,
+                    $3::jsonb,
+                    $4,
+                    $5
+                )
+                RETURNING
+                    id,
+                    customer,
+                    items,
+                    total,
+                    status,
+                    created_at
+                `,
 
-                });
+                [
+                    orderId,
 
+                    JSON.stringify(
+                        cleanCustomer
+                    ),
 
-            /* TOTAL */
+                    JSON.stringify(
+                        cleanItems
+                    ),
 
-            const total =
-                cleanItems.reduce(
-                    (sum, item) => {
+                    total,
 
-                        return sum +
-                            (
-                                item.price *
-                                item.quantity
-                            );
+                    "PENDING"
+                ]
+            );
 
-                    },
-                    0
-                );
+        const savedOrder =
+            result.rows[0];
 
+        res.status(201).json({
 
-            /* ORDER ID */
+            success: true,
 
-            const orderId =
-                "HY-" +
-                Date.now() +
-                "-" +
-                Math.floor(
-                    Math.random() * 1000
-                );
+            message:
+                "Order created successfully.",
 
-
-            const cleanCustomer = {
-
-                name: name,
-
-                phone: phone,
-
-                address: address,
-
-                city: city
-
-            };
-
-
-            /* SAVE */
-
-            const result =
-                await pool.query(
-
-                    `
-                    INSERT INTO orders
-                    (
-                        id,
-                        customer,
-                        items,
-                        total,
-                        status
-                    )
-                    VALUES
-                    (
-                        $1,
-                        $2::jsonb,
-                        $3::jsonb,
-                        $4,
-                        $5
-                    )
-                    RETURNING
-                        id,
-                        customer,
-                        items,
-                        total,
-                        status,
-                        created_at
-                    `,
-
-                    [
-
-                        orderId,
-
-                        JSON.stringify(
-                            cleanCustomer
-                        ),
-
-                        JSON.stringify(
-                            cleanItems
-                        ),
-
-                        total,
-
-                        "PENDING"
-
-                    ]
-
-                );
-
-
-            const savedOrder =
-                result.rows[0];
-
-
-            const order = {
+            order: {
 
                 id:
                     savedOrder.id,
@@ -707,43 +548,27 @@ app.post(
                 createdAt:
                     savedOrder.created_at
 
-            };
+            }
 
+        });
 
-            res.status(201).json({
+    } catch (error) {
 
-                success: true,
+        console.error(
+            "CREATE ORDER ERROR:",
+            error
+        );
 
-                message:
-                    "Order created successfully.",
+        res.status(500).json({
 
-                order: order
+            success: false,
 
-            });
+            message:
+                "Could not create order."
 
-
-        } catch (error) {
-
-            console.error(
-                "CREATE ORDER ERROR:",
-                error
-            );
-
-
-            res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Could not create order."
-
-            });
-
-        }
-
+        });
     }
-);
-
+});
 
 /* ==============================
    GET ALL ORDERS
@@ -770,10 +595,10 @@ app.get(
 
                     FROM orders
 
-                    ORDER BY created_at DESC
+                    ORDER BY
+                        created_at DESC
 
                 `);
-
 
             const formattedOrders =
                 result.rows.map(order => ({
@@ -800,7 +625,6 @@ app.get(
 
                 }));
 
-
             res.json({
 
                 success: true,
@@ -813,14 +637,12 @@ app.get(
 
             });
 
-
         } catch (error) {
 
             console.error(
                 "GET ORDERS ERROR:",
                 error
             );
-
 
             res.status(500).json({
 
@@ -830,12 +652,9 @@ app.get(
                     "Could not fetch orders."
 
             });
-
         }
-
     }
 );
-
 
 /* ==============================
    GET SINGLE ORDER
@@ -869,9 +688,7 @@ app.get(
                     `,
 
                     [req.params.id]
-
                 );
-
 
             if (
                 result.rows.length === 0
@@ -885,13 +702,10 @@ app.get(
                         "Order not found."
 
                 });
-
             }
-
 
             const order =
                 result.rows[0];
-
 
             res.json({
 
@@ -923,14 +737,12 @@ app.get(
 
             });
 
-
         } catch (error) {
 
             console.error(
                 "GET SINGLE ORDER ERROR:",
                 error
             );
-
 
             res.status(500).json({
 
@@ -940,12 +752,9 @@ app.get(
                     "Could not fetch order."
 
             });
-
         }
-
     }
 );
-
 
 /* ==============================
    UPDATE ORDER STATUS
@@ -959,10 +768,8 @@ app.patch(
 
         try {
 
-            const {
-                status
-            } = req.body;
-
+            const { status } =
+                req.body;
 
             const allowedStatuses = [
 
@@ -978,7 +785,6 @@ app.patch(
 
             ];
 
-
             if (
                 !allowedStatuses.includes(
                     status
@@ -993,9 +799,7 @@ app.patch(
                         "Invalid order status."
 
                 });
-
             }
-
 
             const result =
                 await pool.query(
@@ -1017,15 +821,10 @@ app.patch(
                     `,
 
                     [
-
                         status,
-
                         req.params.id
-
                     ]
-
                 );
-
 
             if (
                 result.rows.length === 0
@@ -1039,13 +838,10 @@ app.patch(
                         "Order not found."
 
                 });
-
             }
-
 
             const order =
                 result.rows[0];
-
 
             res.json({
 
@@ -1080,14 +876,12 @@ app.patch(
 
             });
 
-
         } catch (error) {
 
             console.error(
                 "UPDATE STATUS ERROR:",
                 error
             );
-
 
             res.status(500).json({
 
@@ -1097,12 +891,9 @@ app.patch(
                     "Could not update order status."
 
             });
-
         }
-
     }
 );
-
 
 /* ==============================
    START SERVER
@@ -1111,7 +902,6 @@ app.patch(
 async function startServer() {
 
     await initializeDatabase();
-
 
     app.listen(
         PORT,
@@ -1125,15 +915,8 @@ async function startServer() {
             console.log(
                 "DATABASE: POSTGRESQL"
             );
-
-            console.log(
-                "ADMIN SECURITY: ENABLED"
-            );
-
         }
     );
-
 }
-
 
 startServer();
