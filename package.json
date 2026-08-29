@@ -1,0 +1,14 @@
+{
+  "name": "hidden-youth-backend",
+  "version": "1.0.0",
+  "description": "Hidden Youth fashion store backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "cors": "^2.8.5"
+  }
+}
