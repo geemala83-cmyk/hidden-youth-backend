@@ -1,19 +1,72 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
+const { Pool } = require("pg");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+/* ==============================
+   MIDDLEWARE
+============================== */
 
 app.use(cors());
 app.use(express.json());
 
-/* =====================================================
+
+/* ==============================
+   POSTGRESQL
+============================== */
+
+if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL is not configured.");
+    process.exit(1);
+}
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    connectionTimeoutMillis: 10000
+});
+
+
+/* ==============================
+   CREATE ORDERS TABLE
+============================== */
+
+async function initializeDatabase() {
+
+    try {
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id VARCHAR(100) PRIMARY KEY,
+                customer JSONB NOT NULL,
+                items JSONB NOT NULL,
+                total NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+
+        console.log("POSTGRESQL DATABASE READY");
+
+    } catch (error) {
+
+        console.error(
+            "DATABASE INITIALIZATION ERROR:",
+            error.message
+        );
+
+        process.exit(1);
+    }
+}
+
+
+/* ==============================
    HIDDEN YOUTH PRODUCTS
-===================================================== */
+============================== */
 
 const products = [
+
     {
         id: 1,
         name: "GYM FIT — 01",
@@ -22,6 +75,7 @@ const products = [
         price: 4990,
         image: "gym.fit.jpg"
     },
+
     {
         id: 2,
         name: "GYM FIT — 02",
@@ -30,6 +84,7 @@ const products = [
         price: 4990,
         image: "gym.fit2.jpg"
     },
+
     {
         id: 3,
         name: "GYM FIT — 03",
@@ -38,6 +93,7 @@ const products = [
         price: 4990,
         image: "gym.fit3.jpg"
     },
+
     {
         id: 4,
         name: "GYM FIT — 04",
@@ -46,135 +102,56 @@ const products = [
         price: 4990,
         image: "gym.fit4.jpg"
     }
+
 ];
 
 
-/* =====================================================
-   ORDERS FILE
-===================================================== */
+/* ==============================
+   HOME / API STATUS
+============================== */
 
-const ordersFile = path.join(__dirname, "orders.json");
-
-
-/* =====================================================
-   LOAD ORDERS
-===================================================== */
-
-function loadOrders() {
+app.get("/", async (req, res) => {
 
     try {
 
-        if (!fs.existsSync(ordersFile)) {
+        await pool.query("SELECT 1");
 
-            fs.writeFileSync(
-                ordersFile,
-                "[]",
-                "utf8"
-            );
+        res.json({
 
-            return [];
-        }
+            brand: "Hidden Youth",
 
-        const data =
-            fs.readFileSync(
-                ordersFile,
-                "utf8"
-            );
+            status: "ONLINE",
 
-        if (!data.trim()) {
-            return [];
-        }
+            database: "CONNECTED",
 
-        const parsed =
-            JSON.parse(data);
+            message:
+                "Welcome to the Hidden Youth world."
 
-        if (Array.isArray(parsed)) {
-            return parsed;
-        }
-
-        return [];
+        });
 
     } catch (error) {
 
-        console.error(
-            "ORDERS LOAD ERROR:",
-            error.message
-        );
+        res.status(500).json({
 
-        return [];
+            brand: "Hidden Youth",
+
+            status: "ONLINE",
+
+            database: "DISCONNECTED",
+
+            message:
+                "Backend is running but database is unavailable."
+
+        });
+
     }
-}
-
-
-/* =====================================================
-   SAVE ORDERS
-===================================================== */
-
-function saveOrders() {
-
-    try {
-
-        fs.writeFileSync(
-            ordersFile,
-            JSON.stringify(orders, null, 2),
-            "utf8"
-        );
-
-        console.log(
-            "ORDER SAVED TO:",
-            ordersFile
-        );
-
-        return true;
-
-    } catch (error) {
-
-        console.error(
-            "ORDERS SAVE ERROR:",
-            error
-        );
-
-        return false;
-    }
-}
-
-
-/* =====================================================
-   ORDERS
-===================================================== */
-
-let orders = loadOrders();
-
-
-/* =====================================================
-   HOME
-===================================================== */
-
-app.get("/", (req, res) => {
-
-    res.json({
-
-        brand: "Hidden Youth",
-
-        status: "ONLINE",
-
-        message:
-            "Welcome to the Hidden Youth world.",
-
-        orders:
-            orders.length,
-
-        products:
-            products.length
-
-    });
 
 });
 
 
-/* =====================================================
+/* ==============================
    GET ALL PRODUCTS
-===================================================== */
+============================== */
 
 app.get("/api/products", (req, res) => {
 
@@ -182,31 +159,26 @@ app.get("/api/products", (req, res) => {
 
         success: true,
 
-        count:
-            products.length,
+        count: products.length,
 
-        products:
-            products
+        products: products
 
     });
 
 });
 
 
-/* =====================================================
+/* ==============================
    GET SINGLE PRODUCT
-===================================================== */
+============================== */
 
 app.get("/api/products/:id", (req, res) => {
 
-    const id =
-        Number(req.params.id);
+    const id = Number(req.params.id);
 
-    const product =
-        products.find(
-            item =>
-                item.id === id
-        );
+    const product = products.find(
+        item => item.id === id
+    );
 
     if (!product) {
 
@@ -214,8 +186,7 @@ app.get("/api/products/:id", (req, res) => {
 
             success: false,
 
-            message:
-                "Product not found."
+            message: "Product not found."
 
         });
 
@@ -225,87 +196,54 @@ app.get("/api/products/:id", (req, res) => {
 
         success: true,
 
-        product:
-            product
+        product: product
 
     });
 
 });
 
 
-/* =====================================================
+/* ==============================
    GET PRODUCTS BY CATEGORY
-===================================================== */
+============================== */
 
-app.get(
-    "/api/category/:category",
-    (req, res) => {
+app.get("/api/category/:category", (req, res) => {
 
-        const category =
-            req.params.category
-                .toLowerCase();
+    const category =
+        req.params.category.toLowerCase();
 
-        const result =
-            products.filter(
-                product =>
-                    product.category
-                        .toLowerCase() ===
-                    category
-            );
+    const result = products.filter(
+        product =>
+            product.category.toLowerCase() === category
+    );
 
-        res.json({
+    res.json({
 
-            success: true,
+        success: true,
 
-            count:
-                result.length,
+        count: result.length,
 
-            products:
-                result
+        products: result
 
-        });
+    });
 
-    }
-);
+});
 
 
-/* =====================================================
+/* ==============================
    CREATE ORDER
-===================================================== */
+============================== */
 
-app.post("/api/orders", (req, res) => {
+app.post("/api/orders", async (req, res) => {
 
     try {
 
-        const {
-            customer,
-            items
-        } = req.body;
+        const { customer, items } = req.body;
 
-
-        /* ==============================
-           CHECK CUSTOMER
-        ============================== */
-
-        if (!customer) {
-
-            return res.status(400).json({
-
-                success: false,
-
-                message:
-                    "Customer details are required."
-
-            });
-
-        }
-
-
-        /* ==============================
-           CHECK ITEMS
-        ============================== */
 
         if (
+            !customer ||
+            typeof customer !== "object" ||
             !Array.isArray(items) ||
             items.length === 0
         ) {
@@ -315,44 +253,29 @@ app.post("/api/orders", (req, res) => {
                 success: false,
 
                 message:
-                    "At least one product is required."
+                    "Customer and items are required."
 
             });
 
         }
 
 
-        /* ==============================
-           CUSTOMER DATA
-        ============================== */
+        /* CUSTOMER */
 
         const name =
-            String(
-                customer.name || ""
-            ).trim();
+            String(customer.name || "").trim();
 
         const phone =
-            String(
-                customer.phone || ""
-            ).trim();
+            String(customer.phone || "").trim();
 
         const address =
-            String(
-                customer.address || ""
-            ).trim();
+            String(customer.address || "").trim();
 
         const city =
-            String(
-                customer.city || ""
-            ).trim();
+            String(customer.city || "").trim();
 
 
-        if (
-            !name ||
-            !phone ||
-            !address ||
-            !city
-        ) {
+        if (!name || !phone || !address || !city) {
 
             return res.status(400).json({
 
@@ -366,254 +289,167 @@ app.post("/api/orders", (req, res) => {
         }
 
 
-        /* ==============================
-           PREPARE PRODUCTS
-        ============================== */
+        /* ORDER ITEMS */
 
-        const cleanItems =
-            items.map(item => {
+        const cleanItems = items.map(item => {
 
-                const product =
-                    products.find(
-                        product =>
-                            product.id ===
-                            Number(item.id)
-                    );
+            const price =
+                Number(item.price) || 0;
 
-                if (!product) {
+            const quantity =
+                Math.max(
+                    1,
+                    Number(item.quantity) || 1
+                );
 
-                    throw new Error(
-                        "Invalid product ID: " +
-                        item.id
-                    );
+            return {
 
-                }
+                id: item.id,
 
+                name: String(item.name || ""),
 
-                const quantity =
-                    Number(
-                        item.quantity
-                    );
+                price: price,
 
+                quantity: quantity,
 
-                if (
-                    !Number.isInteger(quantity) ||
-                    quantity <= 0
-                ) {
+                image: String(item.image || "")
 
-                    throw new Error(
-                        "Invalid quantity for " +
-                        product.name
-                    );
+            };
 
-                }
+        });
 
 
-                return {
+        /* CALCULATE TOTAL */
 
-                    id:
-                        product.id,
+        const total = cleanItems.reduce(
+            (sum, item) => {
 
-                    name:
-                        product.name,
+                return sum +
+                    (item.price * item.quantity);
 
-                    price:
-                        Number(product.price),
-
-                    quantity:
-                        quantity,
-
-                    image:
-                        product.image
-
-                };
-
-            });
+            },
+            0
+        );
 
 
-        /* ==============================
-           TOTAL
-        ============================== */
+        /* ORDER ID */
 
-        const total =
-            cleanItems.reduce(
-                (sum, item) => {
-
-                    return sum +
-                        (
-                            item.price *
-                            item.quantity
-                        );
-
-                },
-                0
+        const orderId =
+            "HY-" +
+            Date.now() +
+            "-" +
+            Math.floor(
+                Math.random() * 1000
             );
 
 
-        /* ==============================
-           ORDER ID
-        ============================== */
+        const cleanCustomer = {
 
-        const order = {
+            name: name,
 
-            id:
-                "HY-" +
-                Date.now(),
+            phone: phone,
 
-            customer: {
+            address: address,
 
-                name:
-                    name,
-
-                phone:
-                    phone,
-
-                address:
-                    address,
-
-                city:
-                    city
-
-            },
-
-            items:
-                cleanItems,
-
-            total:
-                total,
-
-            status:
-                "PENDING",
-
-            createdAt:
-                new Date().toISOString()
+            city: city
 
         };
 
 
-        /* ==============================
-           ADD ORDER
-        ============================== */
+        /* SAVE TO POSTGRESQL */
 
-        orders.push(order);
+        const result = await pool.query(
 
+            `
+            INSERT INTO orders
+            (
+                id,
+                customer,
+                items,
+                total,
+                status
+            )
+            VALUES
+            (
+                $1,
+                $2::jsonb,
+                $3::jsonb,
+                $4,
+                $5
+            )
+            RETURNING
+                id,
+                customer,
+                items,
+                total,
+                status,
+                created_at
+            `,
 
-        /* ==============================
-           SAVE TO JSON
-        ============================== */
+            [
 
-        const saved =
-            saveOrders();
+                orderId,
 
+                JSON.stringify(cleanCustomer),
 
-        if (!saved) {
+                JSON.stringify(cleanItems),
 
-            orders.pop();
+                total,
 
-            return res.status(500).json({
+                "PENDING"
 
-                success: false,
+            ]
 
-                message:
-                    "Order received but could not be saved."
-
-            });
-
-        }
-
-
-        /* ==============================
-           TERMINAL LOG
-        ============================== */
-
-        console.log("");
-
-        console.log(
-            "======================================"
         );
 
-        console.log(
-            "      NEW HIDDEN YOUTH ORDER"
-        );
 
-        console.log(
-            "======================================"
-        );
-
-        console.log(
-            "ORDER ID:",
-            order.id
-        );
-
-        console.log(
-            "CUSTOMER:",
-            order.customer.name
-        );
-
-        console.log(
-            "PHONE:",
-            order.customer.phone
-        );
-
-        console.log(
-            "CITY:",
-            order.customer.city
-        );
-
-        console.log(
-            "TOTAL: Rs.",
-            order.total.toLocaleString()
-        );
-
-        console.log(
-            "SAVED ORDERS:",
-            orders.length
-        );
-
-        console.log(
-            "FILE:",
-            ordersFile
-        );
-
-        console.log(
-            "======================================"
-        );
-
-        console.log("");
+        const savedOrder =
+            result.rows[0];
 
 
-        /* ==============================
-           RESPONSE
-        ============================== */
+        const order = {
 
-        return res.status(201).json({
+            id: savedOrder.id,
 
-            success:
-                true,
+            customer: savedOrder.customer,
+
+            items: savedOrder.items,
+
+            total: Number(savedOrder.total),
+
+            status: savedOrder.status,
+
+            createdAt:
+                savedOrder.created_at
+
+        };
+
+
+        res.status(201).json({
+
+            success: true,
 
             message:
                 "Order created successfully.",
 
-            order:
-                order
+            order: order
 
         });
+
 
     } catch (error) {
 
         console.error(
-            "ORDER CREATION ERROR:",
+            "CREATE ORDER ERROR:",
             error
         );
 
-        return res.status(400).json({
+        res.status(500).json({
 
-            success:
-                false,
+            success: false,
 
             message:
-                error.message ||
-                "Unable to create order."
+                "Could not create order."
 
         });
 
@@ -622,49 +458,118 @@ app.post("/api/orders", (req, res) => {
 });
 
 
-/* =====================================================
+/* ==============================
    GET ALL ORDERS
-===================================================== */
+============================== */
 
-app.get("/api/orders", (req, res) => {
+app.get("/api/orders", async (req, res) => {
 
-    res.json({
+    try {
 
-        success:
-            true,
+        const result = await pool.query(`
 
-        count:
-            orders.length,
+            SELECT
+                id,
+                customer,
+                items,
+                total,
+                status,
+                created_at
 
-        orders:
-            orders
+            FROM orders
 
-    });
+            ORDER BY created_at DESC
+
+        `);
+
+
+        const formattedOrders =
+            result.rows.map(order => ({
+
+                id: order.id,
+
+                customer: order.customer,
+
+                items: order.items,
+
+                total: Number(order.total),
+
+                status: order.status,
+
+                createdAt:
+                    order.created_at
+
+            }));
+
+
+        res.json({
+
+            success: true,
+
+            count: formattedOrders.length,
+
+            orders: formattedOrders
+
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            "GET ORDERS ERROR:",
+            error
+        );
+
+        res.status(500).json({
+
+            success: false,
+
+            message:
+                "Could not fetch orders."
+
+        });
+
+    }
 
 });
 
 
-/* =====================================================
+/* ==============================
    GET SINGLE ORDER
-===================================================== */
+============================== */
 
-app.get(
-    "/api/orders/:id",
-    (req, res) => {
+app.get("/api/orders/:id", async (req, res) => {
 
-        const order =
-            orders.find(
-                item =>
-                    item.id ===
-                    req.params.id
-            );
+    try {
 
-        if (!order) {
+        const result = await pool.query(
+
+            `
+            SELECT
+                id,
+                customer,
+                items,
+                total,
+                status,
+                created_at
+
+            FROM orders
+
+            WHERE id = $1
+
+            LIMIT 1
+            `,
+
+            [req.params.id]
+
+        );
+
+
+        if (result.rows.length === 0) {
 
             return res.status(404).json({
 
-                success:
-                    false,
+                success: false,
 
                 message:
                     "Order not found."
@@ -673,90 +578,215 @@ app.get(
 
         }
 
+
+        const order =
+            result.rows[0];
+
+
         res.json({
 
-            success:
-                true,
+            success: true,
 
-            order:
-                order
+            order: {
+
+                id: order.id,
+
+                customer: order.customer,
+
+                items: order.items,
+
+                total: Number(order.total),
+
+                status: order.status,
+
+                createdAt:
+                    order.created_at
+
+            }
 
         });
 
-    }
-);
 
-
-/* =====================================================
-   SERVER ERROR HANDLER
-===================================================== */
-
-app.use(
-    (err, req, res, next) => {
+    } catch (error) {
 
         console.error(
-            "SERVER ERROR:",
-            err
+            "GET SINGLE ORDER ERROR:",
+            error
         );
 
         res.status(500).json({
 
-            success:
-                false,
+            success: false,
 
             message:
-                "Internal server error."
+                "Could not fetch order."
 
         });
 
     }
-);
+
+});
 
 
-/* =====================================================
-   START SERVER
-===================================================== */
+/* ==============================
+   UPDATE ORDER STATUS
+============================== */
 
-app.listen(
-    PORT,
-    () => {
+app.patch("/api/orders/:id/status", async (req, res) => {
 
-        console.log("");
+    try {
 
-        console.log(
-            "======================================"
+        const { status } = req.body;
+
+
+        const allowedStatuses = [
+
+            "PENDING",
+
+            "CONFIRMED",
+
+            "SHIPPED",
+
+            "DELIVERED",
+
+            "CANCELLED"
+
+        ];
+
+
+        if (!allowedStatuses.includes(status)) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Invalid order status."
+
+            });
+
+        }
+
+
+        const result = await pool.query(
+
+            `
+            UPDATE orders
+
+            SET status = $1
+
+            WHERE id = $2
+
+            RETURNING
+                id,
+                customer,
+                items,
+                total,
+                status,
+                created_at
+            `,
+
+            [
+
+                status,
+
+                req.params.id
+
+            ]
+
         );
 
-        console.log(
-            "      HIDDEN YOUTH BACKEND"
+
+        if (result.rows.length === 0) {
+
+            return res.status(404).json({
+
+                success: false,
+
+                message:
+                    "Order not found."
+
+            });
+
+        }
+
+
+        const order =
+            result.rows[0];
+
+
+        res.json({
+
+            success: true,
+
+            message:
+                "Order status updated successfully.",
+
+            order: {
+
+                id: order.id,
+
+                customer: order.customer,
+
+                items: order.items,
+
+                total: Number(order.total),
+
+                status: order.status,
+
+                createdAt:
+                    order.created_at
+
+            }
+
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            "UPDATE STATUS ERROR:",
+            error
         );
 
-        console.log(
-            "======================================"
-        );
+        res.status(500).json({
 
-        console.log(
-            `Server: http://localhost:${PORT}`
-        );
+            success: false,
 
-        console.log(
-            `Products: ${products.length}`
-        );
+            message:
+                "Could not update order status."
 
-        console.log(
-            `Saved Orders: ${orders.length}`
-        );
-
-        console.log(
-            "Orders File:",
-            ordersFile
-        );
-
-        console.log(
-            "======================================"
-        );
-
-        console.log("");
+        });
 
     }
-);
+
+});
+
+
+/* ==============================
+   START SERVER
+============================== */
+
+async function startServer() {
+
+    await initializeDatabase();
+
+    app.listen(
+        PORT,
+        "0.0.0.0",
+        () => {
+
+            console.log(
+                `HIDDEN YOUTH BACKEND RUNNING → PORT ${PORT}`
+            );
+
+            console.log(
+                "DATABASE: POSTGRESQL"
+            );
+
+        }
+    );
+
+}
+
+startServer();
