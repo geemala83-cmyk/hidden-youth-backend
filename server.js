@@ -1789,7 +1789,7 @@ app.patch(
 ===================================================== */
 
 app.post(
-    "/api/visitor/heartbeat",
+    "/api/visitors/heartbeat",
     async (req, res) => {
 
         try {
