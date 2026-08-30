@@ -2340,6 +2340,64 @@ setInterval(
     60 * 60 * 1000
 );
 
+/* ==============================
+   LIVE VISITORS
+============================== */
+
+const liveVisitors = new Map();
+
+const VISITOR_TIMEOUT = 60 * 1000; // 60 seconds
+
+/* VISITOR HEARTBEAT — PUBLIC */
+app.post("/api/visitors/heartbeat", (req, res) => {
+
+    const visitorId =
+        String(req.body?.visitorId || "").trim();
+
+    if (!visitorId) {
+        return res.status(400).json({
+            success: false,
+            message: "Visitor ID required."
+        });
+    }
+
+    liveVisitors.set(visitorId, {
+        lastSeen: Date.now()
+    });
+
+    res.json({
+        success: true
+    });
+});
+
+
+/* GET LIVE VISITORS — ADMIN ONLY */
+app.get(
+    "/api/visitors",
+    requireAdmin,
+    (req, res) => {
+
+        const now = Date.now();
+
+        /* Remove inactive visitors */
+
+        for (const [visitorId, visitor] of liveVisitors.entries()) {
+
+            if (
+                now - visitor.lastSeen >
+                VISITOR_TIMEOUT
+            ) {
+                liveVisitors.delete(visitorId);
+            }
+        }
+
+        res.json({
+            success: true,
+            count: liveVisitors.size
+        });
+    }
+);
+
 /* =====================================================
    START SERVER
 ===================================================== */
