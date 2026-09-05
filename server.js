@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const { Pool } = require("pg");
+const https = require("https");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -433,6 +434,245 @@ app.post(
             expiresIn:
                 ADMIN_TOKEN_TTL_MS
         });
+    }
+);
+
+/* =====================================================
+   PAKISTAN POSTAL CODE LOOKUP
+===================================================== */
+
+function fetchPakistanPostCodes() {
+
+    return new Promise((resolve, reject) => {
+
+        https.get(
+            "https://www.pakpost.gov.pk/postcodes.php",
+            {
+                headers: {
+                    "User-Agent":
+                        "Mozilla/5.0 Hidden-Youth"
+                }
+            },
+            (response) => {
+
+                let html = "";
+
+                response.on(
+                    "data",
+                    chunk => {
+                        html += chunk;
+                    }
+                );
+
+                response.on(
+                    "end",
+                    () => {
+
+                        if (
+                            response.statusCode !== 200
+                        ) {
+
+                            return reject(
+                                new Error(
+                                    "Pakistan Post directory unavailable."
+                                )
+                            );
+                        }
+
+                        const results = [];
+
+                        const rowRegex =
+                            /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+
+                        const cellRegex =
+                            /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+
+                        let rowMatch;
+
+                        while (
+                            (rowMatch =
+                                rowRegex.exec(html))
+                        ) {
+
+                            const cells = [];
+
+                            let cellMatch;
+
+                            while (
+                                (cellMatch =
+                                    cellRegex.exec(
+                                        rowMatch[1]
+                                    ))
+                            ) {
+
+                                const clean =
+                                    cellMatch[1]
+                                        .replace(
+                                            /<[^>]*>/g,
+                                            ""
+                                        )
+                                        .replace(
+                                            /&nbsp;/gi,
+                                            " "
+                                        )
+                                        .replace(
+                                            /\s+/g,
+                                            " "
+                                        )
+                                        .trim();
+
+                                cells.push(clean);
+                            }
+
+                            if (
+                                cells.length >= 4
+                            ) {
+
+                                const area =
+                                    cells[0];
+
+                                const postalCode =
+                                    cells[1];
+
+                                const accountOffice =
+                                    cells[2];
+
+                                const province =
+                                    cells[3];
+
+                                if (
+                                    /^\d{5}$/.test(
+                                        postalCode
+                                    )
+                                ) {
+
+                                    results.push({
+
+                                        postalCode:
+                                            postalCode,
+
+                                        area_name:
+                                            area,
+
+                                        city:
+                                            accountOffice
+                                                .replace(
+                                                    /\s+GPO.*$/i,
+                                                    ""
+                                                )
+                                                .replace(
+                                                    /\s+Cantt\.?$/i,
+                                                    ""
+                                                )
+                                                .trim(),
+
+                                        province:
+                                            province
+
+                                    });
+                                }
+                            }
+                        }
+
+                        resolve(results);
+                    }
+                );
+
+            }
+        ).on(
+            "error",
+            reject
+        );
+    });
+}
+
+
+app.get(
+    "/api/postal-codes/:code",
+    async (req, res) => {
+
+        try {
+
+            const postalCode =
+                String(
+                    req.params.code || ""
+                )
+                .replace(/\D/g, "")
+                .slice(0, 5);
+
+            if (
+                postalCode.length !== 5
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Valid 5 digit postal code is required.",
+
+                    results: []
+
+                });
+            }
+
+
+            const allCodes =
+                await fetchPakistanPostCodes();
+
+
+            const matches =
+                allCodes.filter(
+                    item =>
+                        item.postalCode ===
+                        postalCode
+                );
+
+
+            if (
+                matches.length === 0
+            ) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Postal code not found.",
+
+                    results: []
+
+                });
+            }
+
+
+            res.json({
+
+                success: true,
+
+                results: matches
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "POSTAL CODE LOOKUP ERROR:",
+                error
+            );
+
+            res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Could not verify postal code.",
+
+                results: []
+
+            });
+        }
     }
 );
 
