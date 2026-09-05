@@ -2,7 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const { Pool } = require("pg");
-const https = require("https");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -441,149 +442,115 @@ app.post(
    PAKISTAN POSTAL CODE LOOKUP
 ===================================================== */
 
-function fetchPakistanPostCodes() {
+let pakistanPostalCodes = null;
 
-    return new Promise((resolve, reject) => {
+async function loadPakistanPostalCodes() {
 
-        https.get(
-            "https://www.pakpost.gov.pk/postcodes.php",
-            {
-                headers: {
-                    "User-Agent":
-                        "Mozilla/5.0 Hidden-Youth"
-                }
-            },
-            (response) => {
+    if (pakistanPostalCodes) {
+        return pakistanPostalCodes;
+    }
 
-                let html = "";
+    const response = await fetch(
+        "https://www.pakpost.gov.pk/postcodes.php"
+    );
 
-                response.on(
-                    "data",
-                    chunk => {
-                        html += chunk;
-                    }
-                );
-
-                response.on(
-                    "end",
-                    () => {
-
-                        if (
-                            response.statusCode !== 200
-                        ) {
-
-                            return reject(
-                                new Error(
-                                    "Pakistan Post directory unavailable."
-                                )
-                            );
-                        }
-
-                        const results = [];
-
-                        const rowRegex =
-                            /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-
-                        const cellRegex =
-                            /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
-
-                        let rowMatch;
-
-                        while (
-                            (rowMatch =
-                                rowRegex.exec(html))
-                        ) {
-
-                            const cells = [];
-
-                            let cellMatch;
-
-                            while (
-                                (cellMatch =
-                                    cellRegex.exec(
-                                        rowMatch[1]
-                                    ))
-                            ) {
-
-                                const clean =
-                                    cellMatch[1]
-                                        .replace(
-                                            /<[^>]*>/g,
-                                            ""
-                                        )
-                                        .replace(
-                                            /&nbsp;/gi,
-                                            " "
-                                        )
-                                        .replace(
-                                            /\s+/g,
-                                            " "
-                                        )
-                                        .trim();
-
-                                cells.push(clean);
-                            }
-
-                            if (
-                                cells.length >= 4
-                            ) {
-
-                                const area =
-                                    cells[0];
-
-                                const postalCode =
-                                    cells[1];
-
-                                const accountOffice =
-                                    cells[2];
-
-                                const province =
-                                    cells[3];
-
-                                if (
-                                    /^\d{5}$/.test(
-                                        postalCode
-                                    )
-                                ) {
-
-                                    results.push({
-
-                                        postalCode:
-                                            postalCode,
-
-                                        area_name:
-                                            area,
-
-                                        city:
-                                            accountOffice
-                                                .replace(
-                                                    /\s+GPO.*$/i,
-                                                    ""
-                                                )
-                                                .replace(
-                                                    /\s+Cantt\.?$/i,
-                                                    ""
-                                                )
-                                                .trim(),
-
-                                        province:
-                                            province
-
-                                    });
-                                }
-                            }
-                        }
-
-                        resolve(results);
-                    }
-                );
-
-            }
-        ).on(
-            "error",
-            reject
+    if (!response.ok) {
+        throw new Error(
+            "Pakistan Post directory unavailable."
         );
-    });
+    }
+
+    const html =
+        await response.text();
+
+    const results = [];
+
+    const rowRegex =
+        /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+
+    let rowMatch;
+
+    while (
+        (rowMatch = rowRegex.exec(html))
+    ) {
+
+        const cells = [];
+
+        const cellRegex =
+            /<td[^>]*>([\s\S]*?)<\/td>/gi;
+
+        let cellMatch;
+
+        while (
+            (cellMatch =
+                cellRegex.exec(rowMatch[1]))
+        ) {
+
+            const value =
+                cellMatch[1]
+                    .replace(/<[^>]*>/g, "")
+                    .replace(/&nbsp;/gi, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+
+            cells.push(value);
+        }
+
+        if (cells.length >= 4) {
+
+            const area =
+                cells[0];
+
+            const postalCode =
+                cells[1];
+
+            const accountOffice =
+                cells[2];
+
+            const province =
+                cells[3];
+
+            if (
+                /^\d{5}$/.test(
+                    postalCode
+                )
+            ) {
+
+                let city =
+                    accountOffice
+                        .replace(
+                            /\s+GPO.*$/i,
+                            ""
+                        )
+                        .replace(
+                            /\s+Cantt\.?.*$/i,
+                            ""
+                        )
+                        .trim();
+
+                results.push({
+
+                    postalCode:
+                        postalCode,
+
+                    area_name:
+                        area,
+
+                    city:
+                        city,
+
+                    province:
+                        province
+
+                });
+            }
+        }
+    }
+
+    pakistanPostalCodes =
+        results;
+
+    return results;
 }
 
 
@@ -609,7 +576,7 @@ app.get(
                     success: false,
 
                     message:
-                        "Valid 5 digit postal code is required.",
+                        "VALID 5 DIGIT POSTAL CODE REQUIRED.",
 
                     results: []
 
@@ -618,10 +585,10 @@ app.get(
 
 
             const allCodes =
-                await fetchPakistanPostCodes();
+                await loadPakistanPostalCodes();
 
 
-            const matches =
+            const results =
                 allCodes.filter(
                     item =>
                         item.postalCode ===
@@ -630,7 +597,7 @@ app.get(
 
 
             if (
-                matches.length === 0
+                results.length === 0
             ) {
 
                 return res.status(404).json({
@@ -638,7 +605,7 @@ app.get(
                     success: false,
 
                     message:
-                        "Postal code not found.",
+                        "POSTAL CODE NOT FOUND.",
 
                     results: []
 
@@ -650,7 +617,8 @@ app.get(
 
                 success: true,
 
-                results: matches
+                results:
+                    results
 
             });
 
@@ -667,7 +635,7 @@ app.get(
                 success: false,
 
                 message:
-                    "Could not verify postal code.",
+                    "COULD NOT VERIFY POSTAL CODE.",
 
                 results: []
 
