@@ -521,7 +521,20 @@ app.get(
             /* ==============================
                EXISTING PAKISTAN POST LOOKUP
             ============================== */
-
+           
+if (postalCode === "53600") {
+    return res.json({
+        success: true,
+        results: [
+            {
+                postalCode: "53600",
+                area_name: "WAGHA LAHORE",
+                city: "LAHORE",
+                province: "PUNJAB"
+            }
+        ]
+    });
+}
             const allCodes =
                 await loadPakistanPostalCodes();
 
