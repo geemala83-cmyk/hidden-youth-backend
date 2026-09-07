@@ -438,6 +438,205 @@ app.post(
     }
 );
 
+/* =====================================================
+   PAKISTAN POSTAL CODE LOOKUP
+===================================================== */
+
+let pakistanPostalCodes = null;
+
+async function loadPakistanPostalCodes() {
+
+    if (pakistanPostalCodes) {
+        return pakistanPostalCodes;
+    }
+
+    const response = await fetch(
+        "https://www.pakpost.gov.pk/postcodes.php"
+    );
+
+    if (!response.ok) {
+        throw new Error(
+            "Pakistan Post directory unavailable."
+        );
+    }
+
+    const html = await response.text();
+
+    const results = [];
+
+    const rowRegex =
+        /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+
+    let rowMatch;
+
+    while ((rowMatch = rowRegex.exec(html)) !== null) {
+
+        const row = rowMatch[1];
+
+        const cells = [];
+
+        const cellRegex =
+            /<td[^>]*>([\s\S]*?)<\/td>/gi;
+
+        let cellMatch;
+
+        while ((cellMatch = cellRegex.exec(row)) !== null) {
+
+            const value =
+                cellMatch[1]
+                    .replace(/<[^>]+>/g, " ")
+                    .replace(/&nbsp;/gi, " ")
+                    .replace(/&amp;/gi, "&")
+                    .replace(/\s+/g, " ")
+                    .trim();
+
+            cells.push(value);
+        }
+
+        if (cells.length < 4) {
+            continue;
+        }
+
+        const areaName = cells[0];
+
+        const postalCode = cells[1];
+
+        const accountOffice = cells[2];
+
+        const province = cells[3];
+
+        if (!/^\d{5}$/.test(postalCode)) {
+            continue;
+        }
+
+        let city = accountOffice
+            .replace(/\s+G\.?P\.?O\.?.*$/i, "")
+            .replace(/\s+GPO.*$/i, "")
+            .replace(/\s+Cantt\.?.*$/i, "")
+            .trim();
+
+        if (!city) {
+            city = accountOffice.trim();
+        }
+
+        results.push({
+
+            postalCode: postalCode,
+
+            area_name: areaName,
+
+            city: city,
+
+            province: province
+
+        });
+    }
+
+    if (results.length === 0) {
+        throw new Error(
+            "Pakistan postal code directory returned no data."
+        );
+    }
+
+    pakistanPostalCodes = results;
+
+    console.log(
+        "PAKISTAN POSTAL CODES LOADED:",
+        results.length
+    );
+
+    return pakistanPostalCodes;
+}
+
+
+app.get(
+    "/api/postal-codes/:code",
+    async (req, res) => {
+
+        try {
+
+            const postalCode =
+                String(
+                    req.params.code || ""
+                )
+                .replace(/\D/g, "")
+                .slice(0, 5);
+
+
+            if (postalCode.length !== 5) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "VALID 5 DIGIT POSTAL CODE REQUIRED.",
+
+                    results: []
+
+                });
+
+            }
+
+
+            const allCodes =
+                await loadPakistanPostalCodes();
+
+
+            const results =
+                allCodes.filter(
+                    item =>
+                        item.postalCode ===
+                        postalCode
+                );
+
+
+            if (results.length === 0) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "POSTAL CODE NOT FOUND.",
+
+                    results: []
+
+                });
+
+            }
+
+
+            return res.json({
+
+                success: true,
+
+                results: results
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "POSTAL CODE LOOKUP ERROR:",
+                error.message
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "COULD NOT VERIFY POSTAL CODE.",
+
+                results: []
+
+            });
+
+        }
+
+    }
+);
 
 /* =====================================================
    HOME
