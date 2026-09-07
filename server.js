@@ -1488,7 +1488,11 @@ const deliveryCharge =
 
                 address,
 
-                city
+                city,
+
+                 postalCode,
+               
+    deliveryCharge
 
             };
 
