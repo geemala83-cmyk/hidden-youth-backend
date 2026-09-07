@@ -442,112 +442,37 @@ app.post(
    PAKISTAN POSTAL CODE LOOKUP
 ===================================================== */
 
-let pakistanPostalCodes = null;
-
-async function loadPakistanPostalCodes() {
-
-    if (pakistanPostalCodes) {
-        return pakistanPostalCodes;
-    }
-
-    const response = await fetch(
-        "https://www.pakpost.gov.pk/postcodes.php"
-    );
-
-    if (!response.ok) {
-        throw new Error(
-            "Pakistan Post directory unavailable."
-        );
-    }
-
-    const html = await response.text();
-
-    const results = [];
-
-    const rowRegex =
-        /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-
-    let rowMatch;
-
-    while ((rowMatch = rowRegex.exec(html)) !== null) {
-
-        const row = rowMatch[1];
-
-        const cells = [];
-
-        const cellRegex =
-            /<td[^>]*>([\s\S]*?)<\/td>/gi;
-
-        let cellMatch;
-
-        while ((cellMatch = cellRegex.exec(row)) !== null) {
-
-            const value =
-                cellMatch[1]
-                    .replace(/<[^>]+>/g, " ")
-                    .replace(/&nbsp;/gi, " ")
-                    .replace(/&amp;/gi, "&")
-                    .replace(/\s+/g, " ")
-                    .trim();
-
-            cells.push(value);
-        }
-
-        if (cells.length < 4) {
-            continue;
-        }
-
-        const areaName = cells[0];
-
-        const postalCode = cells[1];
-
-        const accountOffice = cells[2];
-
-        const province = cells[3];
-
-        if (!/^\d{5}$/.test(postalCode)) {
-            continue;
-        }
-
-        let city = accountOffice
-            .replace(/\s+G\.?P\.?O\.?.*$/i, "")
-            .replace(/\s+GPO.*$/i, "")
-            .replace(/\s+Cantt\.?.*$/i, "")
-            .trim();
-
-        if (!city) {
-            city = accountOffice.trim();
-        }
-
-        results.push({
-
-            postalCode: postalCode,
-
-            area_name: areaName,
-
-            city: city,
-
-            province: province
-
-        });
-    }
-
-    if (results.length === 0) {
-        throw new Error(
-            "Pakistan postal code directory returned no data."
-        );
-    }
-
-    pakistanPostalCodes = results;
-
-    console.log(
-        "PAKISTAN POSTAL CODES LOADED:",
-        results.length
-    );
-
-    return pakistanPostalCodes;
-}
-
+const verifiedLahorePostalCodes = {
+    "54000": "LAHORE GPO",
+    "54500": "LAHORE MULTAN ROAD POST OFFICE",
+    "54550": "LAHORE PT & T AUDIT",
+    "54560": "LAHORE PMG PUNJAB POST OFFICE",
+    "54570": "LAHORE ALLAMA IQBAL TOWN",
+    "54590": "LAHORE NEW UNIVERSITY CAMPUS",
+    "54600": "LAHORE FEROZEPUR ROAD",
+    "54610": "LAHORE SHADMAN WOMEN MODEL P.O",
+    "54650": "LAHORE SECONDARY BOARD",
+    "54660": "LAHORE GULBERG COLONY",
+    "54700": "LAHORE MODEL TOWN",
+    "54760": "LAHORE ISMAIL NAGAR",
+    "54762": "LAHORE NISHTAR TOWN",
+    "54770": "LAHORE TOWNSHIP SECTOR A-1",
+    "54780": "LAHORE AWAN COLONEY",
+    "54782": "LAHORE JOHAR TOWN",
+    "54792": "LAHORE DEFENCE HOUSING SOCIETY",
+    "54800": "LAHORE C.M.A. CANTT.",
+    "54810": "LAHORE CANTT. GPO",
+    "54850": "LAHORE HARBANS PURA",
+    "54870": "LAHORE TAJPURA",
+    "54880": "LAHORE PUNJAB GOVERNOR HOUSE",
+    "54890": "LAHORE ENGINEERING UNIVERSITY",
+    "54920": "LAHORE BAGHBANPURA",
+    "55160": "LAHORE KOHINOOR ENERGY",
+    "53710": "LAHORE E.M.E SOCIETY P.O",
+    "53720": "LAHORE BAHRIA TOWN",
+    "53100": "LAHORE KAHNA NAU",
+    "53400": "LAHORE BATA PUR"
+};
 
 app.get(
     "/api/postal-codes/:code",
@@ -556,63 +481,67 @@ app.get(
         try {
 
             const postalCode =
-                String(
-                    req.params.code || ""
-                )
-                .replace(/\D/g, "")
-                .slice(0, 5);
-
+                String(req.params.code || "")
+                    .replace(/\D/g, "")
+                    .slice(0, 5);
 
             if (postalCode.length !== 5) {
-
                 return res.status(400).json({
-
                     success: false,
-
-                    message:
-                        "VALID 5 DIGIT POSTAL CODE REQUIRED.",
-
+                    message: "VALID 5 DIGIT POSTAL CODE REQUIRED.",
                     results: []
+                });
+            }
 
+            /* ==============================
+               VERIFIED LAHORE CODES
+            ============================== */
+
+            if (
+                verifiedLahorePostalCodes[postalCode]
+            ) {
+
+                return res.json({
+                    success: true,
+                    results: [
+                        {
+                            postalCode: postalCode,
+                            area_name:
+                                verifiedLahorePostalCodes[
+                                    postalCode
+                                ],
+                            city: "Lahore",
+                            province: "Punjab"
+                        }
+                    ]
                 });
 
             }
 
+            /* ==============================
+               EXISTING PAKISTAN POST LOOKUP
+            ============================== */
 
             const allCodes =
                 await loadPakistanPostalCodes();
 
-
             const results =
                 allCodes.filter(
                     item =>
-                        item.postalCode ===
-                        postalCode
+                        item.postalCode === postalCode
                 );
 
-
             if (results.length === 0) {
-
                 return res.status(404).json({
-
                     success: false,
-
-                    message:
-                        "POSTAL CODE NOT FOUND.",
-
+                    message: "POSTAL CODE NOT FOUND.",
                     results: []
-
                 });
-
             }
 
-
             return res.json({
-
                 success: true,
-
                 results: results
-
             });
 
         } catch (error) {
@@ -623,18 +552,11 @@ app.get(
             );
 
             return res.status(500).json({
-
                 success: false,
-
-                message:
-                    "COULD NOT VERIFY POSTAL CODE.",
-
+                message: "COULD NOT VERIFY POSTAL CODE.",
                 results: []
-
             });
-
         }
-
     }
 );
 
