@@ -1309,6 +1309,13 @@ app.post(
                 String(
                     customer.city || ""
                 ).trim();
+           const postalCode =
+    String(
+        customer.postalCode || ""
+    ).trim();
+
+const deliveryCharge =
+    Number(customer.deliveryCharge) || 0;
 
             if (
                 !name ||
