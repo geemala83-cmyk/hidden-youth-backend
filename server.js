@@ -472,7 +472,6 @@ const verifiedLahorePostalCodes = {
     "53720": "LAHORE BAHRIA TOWN",
     "53100": "LAHORE KAHNA NAU",
     "53400": "LAHORE BATA PUR"
-   "53600": "WAGHA LAHORE",
 };
 
 app.get(
