@@ -218,6 +218,12 @@ async function initializeDatabase() {
             );
         `);
 
+        await pool.query(`
+            ALTER TABLE products
+            ADD COLUMN IF NOT EXISTS sku VARCHAR(100),
+            ADD COLUMN IF NOT EXISTS details TEXT;
+        `);
+
 
         /* ==============================
            VISITORS
@@ -631,7 +637,9 @@ app.get(
                         id,
                         name,
                         category,
+                        sku,
                         description,
+                        details,
                         price,
                         image,
                         stock,
@@ -728,7 +736,9 @@ app.get(
                         id,
                         name,
                         category,
+                        sku,
                         description,
+                        details,
                         price,
                         image,
                         stock,
@@ -817,7 +827,9 @@ app.get(
                         id,
                         name,
                         category,
+                        sku,
                         description,
+                        details,
                         price,
                         image,
                         stock,
@@ -893,7 +905,9 @@ app.post(
 
                 name,
                 category,
+                sku,
                 description,
+                details,
                 price,
                 image,
                 stock,
@@ -933,7 +947,9 @@ app.post(
                     (
                         name,
                         category,
+                        sku,
                         description,
+                        details,
                         price,
                         image,
                         stock,
@@ -948,7 +964,9 @@ app.post(
                         $4,
                         $5,
                         $6,
-                        $7
+                        $7,
+                        $8,
+                        $9
                     )
 
                     RETURNING *
@@ -962,7 +980,15 @@ app.post(
                         ).trim(),
 
                         String(
+                            sku || ""
+                        ).trim(),
+
+                        String(
                             description || ""
+                        ).trim(),
+
+                        String(
+                            details || ""
                         ).trim(),
 
                         cleanPrice,
@@ -1073,10 +1099,20 @@ app.patch(
                     ? String(req.body.category).trim()
                     : old.category;
 
+            const sku =
+                req.body.sku !== undefined
+                    ? String(req.body.sku).trim()
+                    : (old.sku || "");
+
             const description =
                 req.body.description !== undefined
                     ? String(req.body.description).trim()
                     : old.description;
+
+            const details =
+                req.body.details !== undefined
+                    ? String(req.body.details).trim()
+                    : (old.details || "");
 
             const price =
                 req.body.price !== undefined
@@ -1112,11 +1148,13 @@ app.patch(
                     SET
                         name = $1,
                         category = $2,
-                        description = $3,
-                        price = $4,
-                        image = $5,
-                        stock = $6,
-                        available = $7,
+                        sku = $3,
+                        description = $4,
+                        details = $5,
+                        price = $6,
+                        image = $7,
+                        stock = $8,
+                        available = $9,
                         updated_at = NOW()
 
                     WHERE id = $8
@@ -1129,7 +1167,11 @@ app.patch(
 
                         category,
 
+                        sku,
+
                         description,
+
+                        details,
 
                         price,
 
