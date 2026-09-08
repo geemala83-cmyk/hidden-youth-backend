@@ -1157,7 +1157,7 @@ app.patch(
                         available = $9,
                         updated_at = NOW()
 
-                    WHERE id = $8
+                    WHERE id = $10
 
                     RETURNING *
                     `,
