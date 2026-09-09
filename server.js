@@ -405,7 +405,13 @@ app.get("/api/customer/orders", requireCustomer, async (req, res) => {
             `
             SELECT id, customer, items, total, status, created_at
             FROM orders
-            WHERE LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
+            WHERE (
+                    LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
+                    OR (
+                        NULLIF(customer->>'customerId', '') IS NOT NULL
+                        AND (customer->>'customerId')::INTEGER = $2
+                    )
+                )
             ORDER BY created_at DESC
             `,
             [email]
@@ -756,6 +762,19 @@ app.get(
 
         try {
 
+            await pool.query(`
+                UPDATE orders o
+                SET customer = jsonb_set(
+                    o.customer,
+                    '{customerId}',
+                    to_jsonb(c.id),
+                    true
+                )
+                FROM customers c
+                WHERE LOWER(COALESCE(o.customer->>'email', '')) = LOWER(c.email)
+                  AND COALESCE(o.customer->>'customerId', '') = ''
+            `);
+
             const result = await pool.query(`
                 SELECT
                     c.id,
@@ -766,7 +785,13 @@ app.get(
                     COUNT(o.id)::INTEGER AS total_orders
                 FROM customers c
                 LEFT JOIN orders o
-                    ON LOWER(COALESCE(o.customer->>'email', '')) = LOWER(c.email)
+                    ON (
+                        LOWER(COALESCE(o.customer->>'email', '')) = LOWER(c.email)
+                        OR (
+                            NULLIF(o.customer->>'customerId', '') IS NOT NULL
+                            AND (o.customer->>'customerId')::INTEGER = c.id
+                        )
+                    )
                 GROUP BY
                     c.id,
                     c.name,
@@ -853,7 +878,7 @@ app.get(
                 WHERE LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
                 ORDER BY created_at DESC
                 `,
-                [email]
+                [email, customerId]
             );
 
             res.json({
@@ -2034,6 +2059,8 @@ app.post(
                 name,
 
                 email: accountEmail,
+
+                customerId: customerSession ? Number(customerSession.customerId) : null,
 
                 phone,
 
