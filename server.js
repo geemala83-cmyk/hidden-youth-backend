@@ -477,7 +477,8 @@ const verifiedLahorePostalCodes = {
     "53710": "LAHORE E.M.E SOCIETY P.O",
     "53720": "LAHORE BAHRIA TOWN",
     "53100": "LAHORE KAHNA NAU",
-    "53400": "LAHORE BATA PUR"
+    "53400": "LAHORE BATA PUR",
+    "53500": "JALLO / JALLO MORE / JALLO PIND"
 };
 
 app.get(
