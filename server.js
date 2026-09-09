@@ -260,12 +260,6 @@ app.post("/api/customer/register", async (req, res) => {
         );
 
         const customer = result.rows[0];
-
-        await pool.query(
-            `UPDATE customers SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`,
-            [customer.id]
-        );
-
         const token = createCustomerToken(customer.id);
 
         res.status(201).json({
@@ -328,11 +322,6 @@ app.post("/api/customer/login", async (req, res) => {
                 message: "Invalid email or password."
             });
         }
-
-        await pool.query(
-            `UPDATE customers SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`,
-            [customer.id]
-        );
 
         const token = createCustomerToken(customer.id);
 
@@ -456,19 +445,13 @@ async function initializeDatabase() {
                 password_hash TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_login_at TIMESTAMPTZ
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         `);
 
         await pool.query(`
             CREATE UNIQUE INDEX IF NOT EXISTS customers_email_unique_idx
             ON customers (LOWER(email));
-        `);
-
-        await pool.query(`
-            ALTER TABLE customers
-            ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
         `);
 
         /* ==============================
@@ -750,6 +733,235 @@ app.post(
     }
 );
 
+
+
+/* =====================================================
+   LAHORE POSTAL CODE LOOKUP
+   HIDDEN YOUTH
+===================================================== */
+
+const verifiedLahorePostalCodes = {
+    "53100": "LAHORE KAHNA NAU",
+    "53200": "BARKI",
+    "53400": "LAHORE BATA PUR",
+    "53480": "LAHORE BATA PUR",
+    "53500": "JALLO",
+    "53600": "WAGHA LAHORE",
+    "53700": "THOKAR NIAZ BEG",
+    "53710": "LAHORE E.M.E SOCIETY P.O",
+    "53720": "LAHORE BAHRIA TOWN",
+    "53800": "CHUHANG",
+    "54000": "LAHORE GPO",
+    "54010": "NAULAKHA",
+    "54020": "LAHORE ALFLAH",
+    "54030": "LAHORE AITCHESON COLLEGE",
+    "54100": "SHAH ALAM MARKET",
+    "54110": "SHAHI MOHALLAH",
+    "54120": "TIMBER MARKET",
+    "54500": "LAHORE MULTAN ROAD POST OFFICE",
+    "54510": "REWAZ GARDEN",
+    "54550": "LAHORE PT & T AUDIT",
+    "54560": "LAHORE PMG PUNJAB POST OFFICE",
+    "54570": "LAHORE ALLAMA IQBAL TOWN",
+    "54590": "LAHORE NEW UNIVERSITY CAMPUS",
+    "54600": "LAHORE FEROZEPUR ROAD",
+    "54610": "LAHORE SHADMAN WOMEN MODEL P.O",
+    "54650": "LAHORE SECONDARY BOARD",
+    "54660": "LAHORE GULBERG COLONY",
+    "54700": "LAHORE MODEL TOWN",
+    "54760": "LAHORE ISMAIL NAGAR",
+    "54762": "LAHORE NISHTAR TOWN",
+    "54770": "LAHORE TOWNSHIP SECTOR A-1",
+    "54780": "LAHORE AWAN COLONEY",
+    "54782": "LAHORE JOHAR TOWN",
+    "54786": "LAHORE GREEN TOWN",
+    "54790": "MANSOORA",
+    "54792": "LAHORE DEFENCE HOUSING SOCIETY",
+    "54800": "LAHORE C.M.A. CANTT.",
+    "54810": "LAHORE CANTT. GPO",
+    "54820": "LAHORE POSTMALL / JALLO MORE",
+    "54840": "MUGHALPURA",
+    "54850": "LAHORE HARBANS PURA",
+    "54870": "LAHORE TAJPURA",
+    "54880": "LAHORE PUNJAB GOVERNOR HOUSE",
+    "54890": "LAHORE ENGINEERING UNIVERSITY",
+    "54900": "CHAH MIRAN",
+    "54920": "LAHORE BAGHBANPURA",
+    "54950": "SHAHDARA BAGH",
+    "55150": "RAIWIND",
+    "55160": "LAHORE KOHINOOR ENERGY",
+    "55210": "BALLOKI",
+    "55270": "MANGA MANDI",
+    "05301": "SAMANABAD PO",
+    "05302": "DSPS SOUTH DIVN LAHORE PO",
+    "05303": "FAISAL TOWN PO",
+    "05304": "M BLOCK MODEL TOWN PO",
+    "05305": "FEROZPUR ROAD PO",
+    "05306": "CHOWK ICHHRA",
+    "05307": "GULAB DEVI HOSPITAL PO",
+    "05308": "ICHHRA PO",
+    "05309": "NEW GARDEN TOWN N. PO",
+    "05310": "RASOOL PARK PO",
+    "05311": "REHMAN PURA PO",
+    "05312": "ROTARY CENTRE",
+    "05313": "WAHDAT COLONY PO",
+    "05401": "LAHORE GPO NPO",
+    "05402": "CHOWK QURTABA PO",
+    "05403": "GOR ESTATE PO",
+    "05404": "HIGH COURT PO",
+    "05405": "ISLAMPURA PO",
+    "05406": "MADINA CHOK POST OFFICE",
+    "05407": "RACE COURSE ROAD PO",
+    "05408": "SESSION COURT PO",
+    "05409": "SHADMAN COLONY PO",
+    "05410": "SHADMAN COLONY NPO",
+    "05411": "MOZANG PO",
+    "05412": "BADAMI BAGH PO",
+    "05413": "DATA GUNJ BUKSH PO",
+    "05414": "DATA NAGAR PO",
+    "05415": "FLATTIES HOTEL PO",
+    "05416": "KAMYAB NPO",
+    "05417": "KAMYAB PO",
+    "05418": "LAHORE KUTCHERY PO",
+    "05419": "LAKSHMI CHOWK PO",
+    "05420": "MOCHI GATE PO",
+    "05421": "PAKISTAN TIMES PO",
+    "05422": "PUNJAB UNIVERSITY OLD CAMPUS PO",
+    "05423": "TAJ COMPANY NPO",
+    "05424": "TAJ COMPANY PO",
+    "05425": "A.I TOWN NPO",
+    "05426": "WAPDA TOWN PO",
+    "05427": "MANSOORA NPO",
+    "05428": "N.U CAMPUS NPO",
+    "05429": "SHAHDRA TOWN PO",
+    "05430": "AZAM PO",
+    "05431": "V R INSTITUTE PO",
+    "05432": "EP CENTRE SADAR BAZAR NPO",
+    "05433": "FORTRESS STADIUM PO",
+    "05434": "ORDINANCE DEPOT PO",
+    "05435": "SADDAR BAZAR PO",
+    "05436": "LAHORE AIRPORT LSG",
+    "05437": "LAHORE AIRPORT NPO BATCH-I",
+    "05438": "LAHORE AIRPORT NPO BATCH-II",
+    "05439": "MASJID KHALID PO",
+    "05440": "NISHAT COLONY PO",
+    "05441": "NISHTAR COLONY PO",
+    "05442": "R.A BAZAR PO",
+    "05443": "SERVICES PO",
+    "05444": "WALTON PO",
+    "05445": "RANG MAHAL NPO",
+    "05446": "RANG MAHAL PO",
+    "05447": "SHAH ALAM MARKET NPO",
+    "05449": "AMER SIDHU PO",
+    "05450": "KOT LAKHPAT PO",
+    "05452": "JAHANGIR TOWN PO",
+    "05453": "SANDA PO",
+    "05454": "L.C.C.H SOCIETY PO",
+    "05455": "L.C.C.H SOCIETY NPO",
+    "05456": "CG OFFICE PO",
+    "05457": "GULBERG COLONY NPO",
+    "05458": "GULBERG N. PO",
+    "05459": "GULBERG PO",
+    "05460": "BAGHBANPURA NPO",
+    "05461": "BILAL GUNJ PO",
+    "05462": "KPAR PO",
+    "05463": "ADDA CHABEEL PO",
+    "05464": "MEHBOOB BOOTI",
+    "05465": "PAKISTAN MINT PO",
+    "05466": "SHALIMAR TOWN PO",
+    "05467": "AGRICULTURE HOUSE PO",
+    "05468": "ALLAMA IQBAL ROAD PO",
+    "05469": "NAULAKHA NPO",
+    "05470": "RAILWAY HEADQUARTER HSG",
+    "05471": "CHAH MIRAN NPO",
+    "05472": "DAROGHAWALA PO",
+    "05473": "FAIZ BAGH PO",
+    "05474": "MISRI SHAH PO",
+    "05475": "SHAD BAGH PO",
+    "05476": "SULTAN PURA PO",
+    "05477": "WASSANPURA PO",
+    "05478": "DHARAMPURA PO",
+    "05479": "GUNJ MOGHAL PURA PO",
+    "05480": "NABI PURA PO",
+    "05481": "KASURPURA PO",
+    "05482": "SHAHDRA TOWN PO",
+    "05483": "RUSTOM SOHRAB CYCLE FACTORY PO",
+    "05484": "SHAHDRA BAGH NPO",
+    "05485": "DHOLANWAL PO",
+    "05486": "SHAH NOOR PO",
+    "05487": "MARGAZAR COLONY PO",
+    "05488": "CHUBURGI GARDEN ESTATE PO",
+    "05489": "MULTAN ROAD NPO",
+    "05490": "MULTAN ROAD PO",
+    "05491": "SODIWAL PO",
+    "05492": "S&S EP CENTRE PO",
+    "05493": "PAKKI THATTI PO",
+    "05494": "QARSHI DAWA KHANA PO",
+    "05495": "SAMANABAD NPO",
+    "05497": "REHMAN PURA PO",
+    "05498": "NEW FRUIT MARKET PO",
+    "05499": "SHER SHAH COLONY PO"
+};
+
+app.get(
+    "/api/postal-codes/:code",
+    async (req, res) => {
+
+        try {
+
+            const postalCode =
+                String(req.params.code || "")
+                    .replace(/\D/g, "")
+                    .slice(0, 5);
+
+            if (postalCode.length !== 5) {
+
+                return res.status(400).json({
+                    success: false,
+                    message: "VALID 5 DIGIT POSTAL CODE REQUIRED.",
+                    results: []
+                });
+            }
+
+            const area =
+                verifiedLahorePostalCodes[postalCode];
+
+            if (!area) {
+
+                return res.status(404).json({
+                    success: false,
+                    message: "LAHORE POSTAL CODE NOT FOUND.",
+                    results: []
+                });
+            }
+
+            return res.json({
+                success: true,
+                results: [
+                    {
+                        postalCode,
+                        area_name: area,
+                        city: "Lahore",
+                        province: "Punjab"
+                    }
+                ]
+            });
+
+        } catch (error) {
+
+            console.error(
+                "POSTAL CODE LOOKUP ERROR:",
+                error.message
+            );
+
+            return res.status(500).json({
+                success: false,
+                message: "COULD NOT VERIFY POSTAL CODE.",
+                results: []
+            });
+        }
+    }
+);
 
 
 /* =====================================================
@@ -1431,70 +1643,6 @@ app.delete(
         }
     }
 );
-
-/* =====================================================
-   ADMIN — CUSTOMERS
-===================================================== */
-
-app.get(
-    "/api/admin/customers",
-    requireAdmin,
-    async (req, res) => {
-        try {
-            const result = await pool.query(`
-                SELECT
-                    c.id,
-                    c.name,
-                    c.email,
-                    c.created_at,
-                    c.last_login_at,
-                    COUNT(o.id)::int AS order_count
-                FROM customers c
-                LEFT JOIN orders o
-                    ON LOWER(COALESCE(o.customer->>'email', '')) = LOWER(c.email)
-                GROUP BY c.id
-                ORDER BY c.created_at DESC
-            `);
-
-            const now = Date.now();
-            const customers = result.rows.map(customer => {
-                let activeNow = false;
-                for (const session of customerSessions.values()) {
-                    if (
-                        Number(session.customerId) === Number(customer.id) &&
-                        Number(session.expiresAt) > now
-                    ) {
-                        activeNow = true;
-                        break;
-                    }
-                }
-
-                return {
-                    id: customer.id,
-                    name: customer.name,
-                    email: customer.email,
-                    createdAt: customer.created_at,
-                    lastLoginAt: customer.last_login_at,
-                    orderCount: Number(customer.order_count || 0),
-                    activeNow
-                };
-            });
-
-            res.json({
-                success: true,
-                count: customers.length,
-                customers
-            });
-        } catch (error) {
-            console.error("ADMIN CUSTOMERS ERROR:", error);
-            res.status(500).json({
-                success: false,
-                message: "Could not fetch customers."
-            });
-        }
-    }
-);
-
 
 /* =====================================================
    CREATE ORDER
