@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "2mb" }));
 
 /* =====================================================
    DATABASE
@@ -151,6 +151,280 @@ function requireAdmin(req, res, next) {
     next();
 }
 
+
+
+/* =====================================================
+   CUSTOMER AUTHENTICATION
+===================================================== */
+
+const customerSessions = new Map();
+const CUSTOMER_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function normalizeCustomerEmail(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+function hashCustomerPassword(password, salt) {
+    return crypto
+        .scryptSync(String(password), salt, 64)
+        .toString("hex");
+}
+
+function createCustomerToken(customerId) {
+    const token = crypto.randomBytes(32).toString("hex");
+    customerSessions.set(token, {
+        customerId: Number(customerId),
+        expiresAt: Date.now() + CUSTOMER_TOKEN_TTL_MS
+    });
+    return token;
+}
+
+function getCustomerSession(req) {
+    const auth = req.headers.authorization || "";
+    if (!auth.startsWith("Bearer ")) return null;
+
+    const token = auth.slice(7);
+    const session = customerSessions.get(token);
+
+    if (!session || session.expiresAt <= Date.now()) {
+        if (session) customerSessions.delete(token);
+        return null;
+    }
+
+    return { token, ...session };
+}
+
+function requireCustomer(req, res, next) {
+    const session = getCustomerSession(req);
+
+    if (!session) {
+        return res.status(401).json({
+            success: false,
+            message: "Customer login required."
+        });
+    }
+
+    req.customerSession = session;
+    next();
+}
+
+app.post("/api/customer/register", async (req, res) => {
+    try {
+        const name = String(req.body?.name || "").trim();
+        const email = normalizeCustomerEmail(req.body?.email);
+        const password = String(req.body?.password || "");
+
+        if (!name || !email || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Name, email and password are required."
+            });
+        }
+
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return res.status(400).json({
+                success: false,
+                message: "Please enter a valid email address."
+            });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 8 characters."
+            });
+        }
+
+        const existing = await pool.query(
+            `SELECT id FROM customers WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+            [email]
+        );
+
+        if (existing.rows.length) {
+            return res.status(409).json({
+                success: false,
+                message: "An account with this email already exists."
+            });
+        }
+
+        const salt = crypto.randomBytes(16).toString("hex");
+        const passwordHash = hashCustomerPassword(password, salt);
+
+        const result = await pool.query(
+            `
+            INSERT INTO customers (name, email, password_hash, password_salt)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, name, email, created_at
+            `,
+            [name, email, passwordHash, salt]
+        );
+
+        const customer = result.rows[0];
+        const token = createCustomerToken(customer.id);
+
+        res.status(201).json({
+            success: true,
+            message: "Account created successfully.",
+            token,
+            customer: {
+                id: customer.id,
+                name: customer.name,
+                email: customer.email,
+                createdAt: customer.created_at
+            }
+        });
+    } catch (error) {
+        console.error("CUSTOMER REGISTER ERROR:", error);
+        res.status(500).json({
+            success: false,
+            message: "Could not create customer account."
+        });
+    }
+});
+
+app.post("/api/customer/login", async (req, res) => {
+    try {
+        const email = normalizeCustomerEmail(req.body?.email);
+        const password = String(req.body?.password || "");
+
+        if (!email || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Email and password are required."
+            });
+        }
+
+        const result = await pool.query(
+            `
+            SELECT id, name, email, password_hash, password_salt, created_at
+            FROM customers
+            WHERE LOWER(email) = LOWER($1)
+            LIMIT 1
+            `,
+            [email]
+        );
+
+        if (!result.rows.length) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password."
+            });
+        }
+
+        const customer = result.rows[0];
+        const suppliedHash = hashCustomerPassword(password, customer.password_salt);
+        const a = Buffer.from(suppliedHash, "hex");
+        const b = Buffer.from(customer.password_hash, "hex");
+
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password."
+            });
+        }
+
+        const token = createCustomerToken(customer.id);
+
+        res.json({
+            success: true,
+            message: "Login successful.",
+            token,
+            customer: {
+                id: customer.id,
+                name: customer.name,
+                email: customer.email,
+                createdAt: customer.created_at
+            }
+        });
+    } catch (error) {
+        console.error("CUSTOMER LOGIN ERROR:", error);
+        res.status(500).json({
+            success: false,
+            message: "Could not log in."
+        });
+    }
+});
+
+app.post("/api/customer/logout", requireCustomer, (req, res) => {
+    customerSessions.delete(req.customerSession.token);
+    res.json({ success: true, message: "Logged out successfully." });
+});
+
+app.get("/api/customer/me", requireCustomer, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, name, email, created_at FROM customers WHERE id = $1 LIMIT 1`,
+            [req.customerSession.customerId]
+        );
+
+        if (!result.rows.length) {
+            customerSessions.delete(req.customerSession.token);
+            return res.status(401).json({
+                success: false,
+                message: "Customer account not found."
+            });
+        }
+
+        const customer = result.rows[0];
+        res.json({
+            success: true,
+            customer: {
+                id: customer.id,
+                name: customer.name,
+                email: customer.email,
+                createdAt: customer.created_at
+            }
+        });
+    } catch (error) {
+        console.error("CUSTOMER ME ERROR:", error);
+        res.status(500).json({
+            success: false,
+            message: "Could not load account."
+        });
+    }
+});
+
+app.get("/api/customer/orders", requireCustomer, async (req, res) => {
+    try {
+        const customerResult = await pool.query(
+            `SELECT email FROM customers WHERE id = $1 LIMIT 1`,
+            [req.customerSession.customerId]
+        );
+
+        if (!customerResult.rows.length) {
+            return res.status(401).json({ success: false, message: "Customer account not found." });
+        }
+
+        const email = customerResult.rows[0].email;
+        const result = await pool.query(
+            `
+            SELECT id, customer, items, total, status, created_at
+            FROM orders
+            WHERE LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
+            ORDER BY created_at DESC
+            `,
+            [email]
+        );
+
+        res.json({
+            success: true,
+            count: result.rows.length,
+            orders: result.rows.map(order => ({
+                id: order.id,
+                customer: order.customer,
+                items: order.items,
+                total: Number(order.total),
+                status: order.status,
+                createdAt: order.created_at
+            }))
+        });
+    } catch (error) {
+        console.error("CUSTOMER ORDERS ERROR:", error);
+        res.status(500).json({ success: false, message: "Could not fetch your orders." });
+    }
+});
+
+
 /* =====================================================
    DATABASE INITIALIZATION
 ===================================================== */
@@ -158,6 +432,27 @@ function requireAdmin(req, res, next) {
 async function initializeDatabase() {
 
     try {
+
+        /* ==============================
+           CUSTOMERS
+        ============================== */
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(320) NOT NULL,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+
+        await pool.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS customers_email_unique_idx
+            ON customers (LOWER(email));
+        `);
 
         /* ==============================
            ORDERS
@@ -216,12 +511,6 @@ async function initializeDatabase() {
                 updated_at TIMESTAMPTZ
                     NOT NULL DEFAULT NOW()
             );
-        `);
-
-        await pool.query(`
-            ALTER TABLE products
-            ADD COLUMN IF NOT EXISTS sku VARCHAR(100),
-            ADD COLUMN IF NOT EXISTS details TEXT;
         `);
 
 
@@ -444,142 +733,7 @@ app.post(
     }
 );
 
-/* =====================================================
-   PAKISTAN POSTAL CODE LOOKUP
-===================================================== */
 
-const verifiedLahorePostalCodes = {
-    "54000": "LAHORE GPO",
-    "54500": "LAHORE MULTAN ROAD POST OFFICE",
-    "54550": "LAHORE PT & T AUDIT",
-    "54560": "LAHORE PMG PUNJAB POST OFFICE",
-    "54570": "LAHORE ALLAMA IQBAL TOWN",
-    "54590": "LAHORE NEW UNIVERSITY CAMPUS",
-    "54600": "LAHORE FEROZEPUR ROAD",
-    "54610": "LAHORE SHADMAN WOMEN MODEL P.O",
-    "54650": "LAHORE SECONDARY BOARD",
-    "54660": "LAHORE GULBERG COLONY",
-    "54700": "LAHORE MODEL TOWN",
-    "54760": "LAHORE ISMAIL NAGAR",
-    "54762": "LAHORE NISHTAR TOWN",
-    "54770": "LAHORE TOWNSHIP SECTOR A-1",
-    "54780": "LAHORE AWAN COLONEY",
-    "54782": "LAHORE JOHAR TOWN",
-    "54792": "LAHORE DEFENCE HOUSING SOCIETY",
-    "54800": "LAHORE C.M.A. CANTT.",
-    "54810": "LAHORE CANTT. GPO",
-    "54850": "LAHORE HARBANS PURA",
-    "54870": "LAHORE TAJPURA",
-    "54880": "LAHORE PUNJAB GOVERNOR HOUSE",
-    "54890": "LAHORE ENGINEERING UNIVERSITY",
-    "54920": "LAHORE BAGHBANPURA",
-    "55160": "LAHORE KOHINOOR ENERGY",
-    "53710": "LAHORE E.M.E SOCIETY P.O",
-    "53720": "LAHORE BAHRIA TOWN",
-    "53100": "LAHORE KAHNA NAU",
-    "53400": "LAHORE BATA PUR",
-    "53500": "JALLO / JALLO MORE / JALLO PIND"
-};
-
-app.get(
-    "/api/postal-codes/:code",
-    async (req, res) => {
-
-        try {
-
-            const postalCode =
-                String(req.params.code || "")
-                    .replace(/\D/g, "")
-                    .slice(0, 5);
-
-            if (postalCode.length !== 5) {
-                return res.status(400).json({
-                    success: false,
-                    message: "VALID 5 DIGIT POSTAL CODE REQUIRED.",
-                    results: []
-                });
-            }
-
-            /* ==============================
-               VERIFIED LAHORE CODES
-            ============================== */
-
-            if (
-                verifiedLahorePostalCodes[postalCode]
-            ) {
-
-                return res.json({
-                    success: true,
-                    results: [
-                        {
-                            postalCode: postalCode,
-                            area_name:
-                                verifiedLahorePostalCodes[
-                                    postalCode
-                                ],
-                            city: "Lahore",
-                            province: "Punjab"
-                        }
-                    ]
-                });
-
-            }
-
-            /* ==============================
-               EXISTING PAKISTAN POST LOOKUP
-            ============================== */
-           
-if (postalCode === "53600") {
-    return res.json({
-        success: true,
-        results: [
-            {
-                postalCode: "53600",
-                area_name: "WAGHA LAHORE",
-                city: "LAHORE",
-                province: "PUNJAB"
-            }
-        ]
-    });
-}
-           
-            const allCodes =
-                await loadPakistanPostalCodes();
-
-            const results =
-                allCodes.filter(
-                    item =>
-                        item.postalCode === postalCode
-                );
-
-            if (results.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: "POSTAL CODE NOT FOUND.",
-                    results: []
-                });
-            }
-
-            return res.json({
-                success: true,
-                results: results
-            });
-
-        } catch (error) {
-
-            console.error(
-                "POSTAL CODE LOOKUP ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-                message: "COULD NOT VERIFY POSTAL CODE.",
-                results: []
-            });
-        }
-    }
-);
 
 /* =====================================================
    HOME
@@ -638,9 +792,7 @@ app.get(
                         id,
                         name,
                         category,
-                        sku,
                         description,
-                        details,
                         price,
                         image,
                         stock,
@@ -737,9 +889,7 @@ app.get(
                         id,
                         name,
                         category,
-                        sku,
                         description,
-                        details,
                         price,
                         image,
                         stock,
@@ -828,9 +978,7 @@ app.get(
                         id,
                         name,
                         category,
-                        sku,
                         description,
-                        details,
                         price,
                         image,
                         stock,
@@ -906,9 +1054,7 @@ app.post(
 
                 name,
                 category,
-                sku,
                 description,
-                details,
                 price,
                 image,
                 stock,
@@ -948,9 +1094,7 @@ app.post(
                     (
                         name,
                         category,
-                        sku,
                         description,
-                        details,
                         price,
                         image,
                         stock,
@@ -965,9 +1109,7 @@ app.post(
                         $4,
                         $5,
                         $6,
-                        $7,
-                        $8,
-                        $9
+                        $7
                     )
 
                     RETURNING *
@@ -981,15 +1123,7 @@ app.post(
                         ).trim(),
 
                         String(
-                            sku || ""
-                        ).trim(),
-
-                        String(
                             description || ""
-                        ).trim(),
-
-                        String(
-                            details || ""
                         ).trim(),
 
                         cleanPrice,
@@ -1100,20 +1234,10 @@ app.patch(
                     ? String(req.body.category).trim()
                     : old.category;
 
-            const sku =
-                req.body.sku !== undefined
-                    ? String(req.body.sku).trim()
-                    : (old.sku || "");
-
             const description =
                 req.body.description !== undefined
                     ? String(req.body.description).trim()
                     : old.description;
-
-            const details =
-                req.body.details !== undefined
-                    ? String(req.body.details).trim()
-                    : (old.details || "");
 
             const price =
                 req.body.price !== undefined
@@ -1149,16 +1273,14 @@ app.patch(
                     SET
                         name = $1,
                         category = $2,
-                        sku = $3,
-                        description = $4,
-                        details = $5,
-                        price = $6,
-                        image = $7,
-                        stock = $8,
-                        available = $9,
+                        description = $3,
+                        price = $4,
+                        image = $5,
+                        stock = $6,
+                        available = $7,
                         updated_at = NOW()
 
-                    WHERE id = $10
+                    WHERE id = $8
 
                     RETURNING *
                     `,
@@ -1168,11 +1290,7 @@ app.patch(
 
                         category,
 
-                        sku,
-
                         description,
-
-                        details,
 
                         price,
 
@@ -1352,13 +1470,6 @@ app.post(
                 String(
                     customer.city || ""
                 ).trim();
-           const postalCode =
-    String(
-        customer.postalCode || ""
-    ).trim();
-
-const deliveryCharge =
-    Number(customer.deliveryCharge) || 0;
 
             if (
                 !name ||
@@ -1523,19 +1634,31 @@ const deliveryCharge =
                 );
 
 
+            const customerSession = getCustomerSession(req);
+
+            let accountEmail = String(customer.email || "").trim().toLowerCase();
+
+            if (customerSession) {
+                const accountResult = await client.query(
+                    `SELECT email FROM customers WHERE id = $1 LIMIT 1`,
+                    [customerSession.customerId]
+                );
+                if (accountResult.rows.length) {
+                    accountEmail = accountResult.rows[0].email;
+                }
+            }
+
             const cleanCustomer = {
 
                 name,
+
+                email: accountEmail,
 
                 phone,
 
                 address,
 
-                city,
-
-                 postalCode,
-               
-    deliveryCharge
+                city
 
             };
 
