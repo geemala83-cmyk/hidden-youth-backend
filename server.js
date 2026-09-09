@@ -323,6 +323,11 @@ app.post("/api/customer/login", async (req, res) => {
             });
         }
 
+        await pool.query(
+            `UPDATE customers SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`,
+            [customer.id]
+        );
+
         const token = createCustomerToken(customer.id);
 
         res.json({
@@ -452,6 +457,11 @@ async function initializeDatabase() {
         await pool.query(`
             CREATE UNIQUE INDEX IF NOT EXISTS customers_email_unique_idx
             ON customers (LOWER(email));
+        `);
+
+        await pool.query(`
+            ALTER TABLE customers
+            ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
         `);
 
         /* ==============================
@@ -733,6 +743,148 @@ app.post(
     }
 );
 
+
+
+/* =====================================================
+   CUSTOMER MANAGEMENT — ADMIN — ADDED ONLY
+===================================================== */
+
+app.get(
+    "/api/admin/customers",
+    requireAdmin,
+    async (req, res) => {
+
+        try {
+
+            const result = await pool.query(`
+                SELECT
+                    c.id,
+                    c.name,
+                    c.email,
+                    c.created_at,
+                    c.last_login_at,
+                    COUNT(o.id)::INTEGER AS total_orders
+                FROM customers c
+                LEFT JOIN orders o
+                    ON LOWER(COALESCE(o.customer->>'email', '')) = LOWER(c.email)
+                GROUP BY
+                    c.id,
+                    c.name,
+                    c.email,
+                    c.created_at,
+                    c.last_login_at
+                ORDER BY c.created_at DESC
+            `);
+
+            const now = Date.now();
+
+            const activeCustomerIds = new Set(
+                Array.from(customerSessions.values())
+                    .filter(session => session.expiresAt > now)
+                    .map(session => Number(session.customerId))
+            );
+
+            res.json({
+                success: true,
+                count: result.rows.length,
+                customers: result.rows.map(customer => ({
+                    id: customer.id,
+                    name: customer.name,
+                    email: customer.email,
+                    createdAt: customer.created_at,
+                    lastLoginAt: customer.last_login_at,
+                    totalOrders: Number(customer.total_orders || 0),
+                    loggedIn: activeCustomerIds.has(Number(customer.id))
+                }))
+            });
+
+        } catch (error) {
+
+            console.error(
+                "ADMIN CUSTOMERS ERROR:",
+                error.message
+            );
+
+            res.status(500).json({
+                success: false,
+                message: "Could not fetch customers."
+            });
+
+        }
+
+    }
+);
+
+
+app.get(
+    "/api/admin/customers/:id/orders",
+    requireAdmin,
+    async (req, res) => {
+
+        try {
+
+            const customerId = Number(req.params.id);
+
+            if (!Number.isInteger(customerId) || customerId <= 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid customer ID."
+                });
+            }
+
+            const customerResult = await pool.query(
+                `SELECT email FROM customers WHERE id = $1 LIMIT 1`,
+                [customerId]
+            );
+
+            if (!customerResult.rows.length) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Customer not found."
+                });
+            }
+
+            const email = customerResult.rows[0].email;
+
+            const result = await pool.query(
+                `
+                SELECT id, customer, items, total, status, created_at
+                FROM orders
+                WHERE LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
+                ORDER BY created_at DESC
+                `,
+                [email]
+            );
+
+            res.json({
+                success: true,
+                count: result.rows.length,
+                orders: result.rows.map(order => ({
+                    id: order.id,
+                    customer: order.customer,
+                    items: order.items,
+                    total: Number(order.total),
+                    status: order.status,
+                    createdAt: order.created_at
+                }))
+            });
+
+        } catch (error) {
+
+            console.error(
+                "ADMIN CUSTOMER ORDERS ERROR:",
+                error.message
+            );
+
+            res.status(500).json({
+                success: false,
+                message: "Could not fetch customer orders."
+            });
+
+        }
+
+    }
+);
 
 
 /* =====================================================
