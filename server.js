@@ -414,7 +414,7 @@ app.get("/api/customer/orders", requireCustomer, async (req, res) => {
                 )
             ORDER BY created_at DESC
             `,
-            [email]
+            [email, req.customerSession.customerId]
         );
 
         res.json({
@@ -875,7 +875,13 @@ app.get(
                 `
                 SELECT id, customer, items, total, status, created_at
                 FROM orders
-                WHERE LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
+                WHERE (
+                    LOWER(COALESCE(customer->>'email', '')) = LOWER($1)
+                    OR (
+                        NULLIF(customer->>'customerId', '') IS NOT NULL
+                        AND (customer->>'customerId')::INTEGER = $2
+                    )
+                )
                 ORDER BY created_at DESC
                 `,
                 [email, customerId]
