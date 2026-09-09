@@ -1887,7 +1887,11 @@ app.post(
 
                 address,
 
-                city
+                city,
+
+                postalCode: String(customer.postalCode || "").trim(),
+
+                deliveryCharge: Number(customer.deliveryCharge || 0)
 
             };
 
