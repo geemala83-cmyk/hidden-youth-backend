@@ -260,6 +260,12 @@ app.post("/api/customer/register", async (req, res) => {
         );
 
         const customer = result.rows[0];
+
+        await pool.query(
+            `UPDATE customers SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`,
+            [customer.id]
+        );
+
         const token = createCustomerToken(customer.id);
 
         res.status(201).json({
@@ -322,6 +328,11 @@ app.post("/api/customer/login", async (req, res) => {
                 message: "Invalid email or password."
             });
         }
+
+        await pool.query(
+            `UPDATE customers SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`,
+            [customer.id]
+        );
 
         const token = createCustomerToken(customer.id);
 
@@ -445,13 +456,19 @@ async function initializeDatabase() {
                 password_hash TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_login_at TIMESTAMPTZ
             );
         `);
 
         await pool.query(`
             CREATE UNIQUE INDEX IF NOT EXISTS customers_email_unique_idx
             ON customers (LOWER(email));
+        `);
+
+        await pool.query(`
+            ALTER TABLE customers
+            ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
         `);
 
         /* ==============================
@@ -1414,6 +1431,70 @@ app.delete(
         }
     }
 );
+
+/* =====================================================
+   ADMIN — CUSTOMERS
+===================================================== */
+
+app.get(
+    "/api/admin/customers",
+    requireAdmin,
+    async (req, res) => {
+        try {
+            const result = await pool.query(`
+                SELECT
+                    c.id,
+                    c.name,
+                    c.email,
+                    c.created_at,
+                    c.last_login_at,
+                    COUNT(o.id)::int AS order_count
+                FROM customers c
+                LEFT JOIN orders o
+                    ON LOWER(COALESCE(o.customer->>'email', '')) = LOWER(c.email)
+                GROUP BY c.id
+                ORDER BY c.created_at DESC
+            `);
+
+            const now = Date.now();
+            const customers = result.rows.map(customer => {
+                let activeNow = false;
+                for (const session of customerSessions.values()) {
+                    if (
+                        Number(session.customerId) === Number(customer.id) &&
+                        Number(session.expiresAt) > now
+                    ) {
+                        activeNow = true;
+                        break;
+                    }
+                }
+
+                return {
+                    id: customer.id,
+                    name: customer.name,
+                    email: customer.email,
+                    createdAt: customer.created_at,
+                    lastLoginAt: customer.last_login_at,
+                    orderCount: Number(customer.order_count || 0),
+                    activeNow
+                };
+            });
+
+            res.json({
+                success: true,
+                count: customers.length,
+                customers
+            });
+        } catch (error) {
+            console.error("ADMIN CUSTOMERS ERROR:", error);
+            res.status(500).json({
+                success: false,
+                message: "Could not fetch customers."
+            });
+        }
+    }
+);
+
 
 /* =====================================================
    CREATE ORDER
