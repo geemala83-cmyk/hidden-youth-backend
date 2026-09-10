@@ -2049,14 +2049,32 @@ app.post(
             const customerSession = getCustomerSession(req);
 
             let accountEmail = String(customer.email || "").trim().toLowerCase();
+            let accountCustomerId = null;
 
             if (customerSession) {
                 const accountResult = await client.query(
-                    `SELECT email FROM customers WHERE id = $1 LIMIT 1`,
+                    `SELECT id, email FROM customers WHERE id = $1 LIMIT 1`,
                     [customerSession.customerId]
                 );
                 if (accountResult.rows.length) {
+                    accountCustomerId = Number(accountResult.rows[0].id);
                     accountEmail = accountResult.rows[0].email;
+                }
+            }
+
+            /*
+               If the customer's in-memory login session is no longer available
+               (for example after a Railway restart), link the order by the
+               customer email that the checkout already sends.
+            */
+            if (!accountCustomerId && accountEmail) {
+                const emailCustomerResult = await client.query(
+                    `SELECT id, email FROM customers WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+                    [accountEmail]
+                );
+                if (emailCustomerResult.rows.length) {
+                    accountCustomerId = Number(emailCustomerResult.rows[0].id);
+                    accountEmail = emailCustomerResult.rows[0].email;
                 }
             }
 
@@ -2066,7 +2084,7 @@ app.post(
 
                 email: accountEmail,
 
-                customerId: customerSession ? Number(customerSession.customerId) : null,
+                customerId: accountCustomerId,
 
                 phone,
 
