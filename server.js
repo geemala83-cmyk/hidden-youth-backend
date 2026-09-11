@@ -2091,9 +2091,32 @@ app.post(
 
                 postalCode: String(customer.postalCode || "").trim(),
 
-                deliveryCharge: Number(customer.deliveryCharge || 0)
+                deliveryCharge: Number(customer.deliveryCharge || 0),
+
+                payment: {
+                    method: "JAZZCASH",
+                    accountName: "Shazia Zahid",
+                    accountNumber: "03094567938",
+                    transactionId: String(
+                        customer.payment?.transactionId || ""
+                    ).trim(),
+                    screenshot: String(
+                        customer.payment?.screenshot || ""
+                    ),
+                    status: "PENDING",
+                    submittedAt: new Date().toISOString()
+                }
 
             };
+
+            if (
+                !cleanCustomer.payment.transactionId ||
+                !cleanCustomer.payment.screenshot
+            ) {
+                throw new Error(
+                    "100% advance payment details are required."
+                );
+            }
 
 
             /* ==============================
@@ -2396,6 +2419,157 @@ app.get(
 );
 
 /* =====================================================
+   ADMIN — VERIFY ADVANCE PAYMENT — ADDED ONLY
+===================================================== */
+
+app.patch(
+    "/api/orders/:id/payment",
+    requireAdmin,
+    async (req, res) => {
+
+        try {
+
+            const action =
+                String(req.body?.action || "")
+                    .trim()
+                    .toUpperCase();
+
+            if (
+                action !== "VERIFY" &&
+                action !== "REJECT"
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid payment action."
+                });
+            }
+
+            const result =
+                await pool.query(
+                    `
+                    SELECT
+                        id,
+                        customer,
+                        items,
+                        total,
+                        status,
+                        created_at
+                    FROM orders
+                    WHERE id = $1
+                    LIMIT 1
+                    `,
+                    [req.params.id]
+                );
+
+            if (!result.rows.length) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Order not found."
+                });
+            }
+
+            const order = result.rows[0];
+            const customer =
+                order.customer &&
+                typeof order.customer === "object"
+                    ? order.customer
+                    : {};
+
+            const payment =
+                customer.payment &&
+                typeof customer.payment === "object"
+                    ? customer.payment
+                    : {};
+
+            if (
+                !payment.transactionId ||
+                !payment.screenshot
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Payment proof is missing."
+                });
+            }
+
+            const updatedPayment = {
+                ...payment,
+                status:
+                    action === "VERIFY"
+                        ? "VERIFIED"
+                        : "REJECTED",
+                verifiedAt:
+                    new Date().toISOString()
+            };
+
+            const updatedCustomer = {
+                ...customer,
+                payment: updatedPayment
+            };
+
+            const nextStatus =
+                action === "VERIFY"
+                    ? "CONFIRMED"
+                    : "PENDING";
+
+            const updated =
+                await pool.query(
+                    `
+                    UPDATE orders
+                    SET
+                        customer = $1::jsonb,
+                        status = $2
+                    WHERE id = $3
+                    RETURNING
+                        id,
+                        customer,
+                        items,
+                        total,
+                        status,
+                        created_at
+                    `,
+                    [
+                        JSON.stringify(updatedCustomer),
+                        nextStatus,
+                        req.params.id
+                    ]
+                );
+
+            const saved = updated.rows[0];
+
+            res.json({
+                success: true,
+                message:
+                    action === "VERIFY"
+                        ? "Payment verified and order confirmed."
+                        : "Payment rejected. Order remains pending.",
+                order: {
+                    id: saved.id,
+                    customer: saved.customer,
+                    items: saved.items,
+                    total: Number(saved.total),
+                    status: saved.status,
+                    createdAt: saved.created_at
+                }
+            });
+
+        } catch (error) {
+
+            console.error(
+                "VERIFY PAYMENT ERROR:",
+                error
+            );
+
+            res.status(500).json({
+                success: false,
+                message:
+                    "Could not update payment status."
+            });
+        }
+    }
+);
+
+
+/* =====================================================
    ADMIN — UPDATE ORDER STATUS
 ===================================================== */
 
@@ -2436,6 +2610,61 @@ app.patch(
 
                     message:
                         "Invalid order status."
+
+                });
+            }
+
+            const currentOrderResult =
+                await pool.query(
+                    `
+                    SELECT customer, status
+                    FROM orders
+                    WHERE id = $1
+                    LIMIT 1
+                    `,
+                    [req.params.id]
+                );
+
+            if (!currentOrderResult.rows.length) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Order not found."
+
+                });
+            }
+
+            const currentCustomer =
+                currentOrderResult.rows[0].customer || {};
+
+            const currentPayment =
+                currentCustomer.payment || {};
+
+            const hasAdvancePayment =
+                Boolean(
+                    currentCustomer.payment
+                );
+
+            if (
+                hasAdvancePayment &&
+                (
+                    currentPayment.status !== "VERIFIED" ||
+                    (
+                        status === "CONFIRMED" &&
+                        currentPayment.status !== "VERIFIED"
+                    )
+                )
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Payment must be verified before this order can be confirmed or processed."
 
                 });
             }
