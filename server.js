@@ -8,8 +8,138 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+/* =====================================================
+   BASIC SECURITY HARDENING
+===================================================== */
+
+app.disable("x-powered-by");
+
+/*
+ * CORS is configurable so the existing frontend keeps working
+ * until FRONTEND_ORIGINS is added in production.
+ * Set FRONTEND_ORIGINS to one or more comma-separated frontend
+ * origins, for example:
+ * https://your-site.vercel.app,https://www.yourdomain.com
+ */
+const configuredCorsOrigins = String(
+    process.env.FRONTEND_ORIGINS || ""
+)
+    .split(",")
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+app.use(cors({
+    origin: (origin, callback) => {
+
+        // Non-browser/server-to-server requests have no Origin header.
+        if (!origin) return callback(null, true);
+
+        // Backward-compatible until the production frontend origin is set.
+        if (configuredCorsOrigins.length === 0) {
+            return callback(null, true);
+        }
+
+        if (configuredCorsOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        return callback(new Error("CORS origin not allowed."));
+    },
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    maxAge: 86400
+}));
+
+app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    next();
+});
+
 app.use(express.json({ limit: "2mb" }));
+
+/* =====================================================
+   SIMPLE IN-MEMORY RATE LIMITER
+   Protects authentication and public tracking endpoints
+   without adding another dependency.
+===================================================== */
+
+const rateLimitBuckets = new Map();
+
+function getClientIp(req) {
+    // Railway/proxies provide x-forwarded-for. Use only the first entry.
+    const forwarded = String(req.headers["x-forwarded-for"] || "")
+        .split(",")[0]
+        .trim();
+
+    return forwarded || req.socket.remoteAddress || "unknown";
+}
+
+function createRateLimiter({ windowMs, max, message }) {
+    return (req, res, next) => {
+        const key = `${req.path}:${getClientIp(req)}`;
+        const now = Date.now();
+        const current = rateLimitBuckets.get(key);
+
+        if (!current || now - current.startedAt >= windowMs) {
+            rateLimitBuckets.set(key, {
+                startedAt: now,
+                count: 1
+            });
+            return next();
+        }
+
+        current.count += 1;
+
+        if (current.count > max) {
+            const retryAfter = Math.max(1, Math.ceil((windowMs - (now - current.startedAt)) / 1000));
+            res.setHeader("Retry-After", retryAfter);
+            return res.status(429).json({
+                success: false,
+                message
+            });
+        }
+
+        next();
+    };
+}
+
+const authRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: "Too many login attempts. Please try again later."
+});
+
+const registerRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: "Too many registration attempts. Please try again later."
+});
+
+const visitorRateLimit = createRateLimiter({
+    windowMs: 60 * 1000,
+    max: 120,
+    message: "Too many visitor requests. Please slow down."
+});
+
+const cartRateLimit = createRateLimiter({
+    windowMs: 60 * 1000,
+    max: 30,
+    message: "Too many cart requests. Please slow down."
+});
+
+// Prevent the rate-limit Map itself from growing forever.
+setInterval(() => {
+    const cutoff = Date.now() - (15 * 60 * 1000);
+    for (const [key, bucket] of rateLimitBuckets) {
+        if (bucket.startedAt < cutoff) {
+            rateLimitBuckets.delete(key);
+        }
+    }
+}, 5 * 60 * 1000).unref();
 
 /* =====================================================
    DATABASE
@@ -208,7 +338,7 @@ function requireCustomer(req, res, next) {
     next();
 }
 
-app.post("/api/customer/register", async (req, res) => {
+app.post("/api/customer/register", registerRateLimit, async (req, res) => {
     try {
         const name = String(req.body?.name || "").trim();
         const email = normalizeCustomerEmail(req.body?.email);
@@ -282,7 +412,7 @@ app.post("/api/customer/register", async (req, res) => {
     }
 });
 
-app.post("/api/customer/login", async (req, res) => {
+app.post("/api/customer/login", authRateLimit, async (req, res) => {
     try {
         const email = normalizeCustomerEmail(req.body?.email);
         const password = String(req.body?.password || "");
@@ -704,6 +834,7 @@ async function initializeDatabase() {
 
 app.post(
     "/api/admin/login",
+    authRateLimit,
     (req, res) => {
 
         const username =
@@ -2767,6 +2898,7 @@ app.patch(
 
 app.post(
     "/api/visitors/heartbeat",
+    visitorRateLimit,
     async (req, res) => {
 
         try {
@@ -2890,6 +3022,7 @@ app.post(
 
 app.post(
     "/api/visitor/cart",
+    cartRateLimit,
     async (req, res) => {
 
         try {
